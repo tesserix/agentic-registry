@@ -1,0 +1,328 @@
+package api
+
+import (
+	"errors"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/tesserix/agentic-registry/internal/auth"
+	"github.com/tesserix/agentic-registry/internal/render"
+	"github.com/tesserix/agentic-registry/internal/selector"
+	"github.com/tesserix/agentic-registry/internal/store"
+	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
+)
+
+// mountV0 registers the devai-compatible catalog API. Collection names accept
+// the "servers" alias for MCPServer. apiVersion is normalized on ingest.
+func (s *Server) mountV0(r chi.Router) {
+	r.Route("/v0", func(r chi.Router) {
+		r.Get("/health", s.health)
+
+		// Batch apply / delete (kubectl-apply-like, multi-doc YAML).
+		r.Post("/apply", s.v0Apply)
+		r.Delete("/apply", s.v0DeleteApply)
+
+		// Prompt render (Portkey-style; keeps the registry off the request path).
+		r.Post("/prompts/{name}/render", s.v0Render)
+
+		// Per-collection CRUD.
+		r.Route("/{plural}", func(r chi.Router) {
+			r.Get("/", s.v0List)
+			r.Post("/", s.v0Publish)
+			r.Get("/{name}", s.v0GetLatest)
+			r.Get("/{name}/tags", s.v0Tags)
+			r.Get("/{name}/{tag}", s.v0Get)
+			r.Delete("/{name}/{tag}", s.v0Delete)
+		})
+	})
+}
+
+func (s *Server) kindFromPath(w http.ResponseWriter, r *http.Request) (v1alpha1.Kind, bool) {
+	plural := chi.URLParam(r, "plural")
+	kind, ok := v1alpha1.KindForPlural(plural)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "unknown collection: "+plural)
+		return "", false
+	}
+	return kind, true
+}
+
+func (s *Server) namespace(r *http.Request) string {
+	if ns := r.URL.Query().Get("namespace"); ns != "" {
+		return ns
+	}
+	return v1alpha1.DefaultNamespace
+}
+
+func (s *Server) v0List(w http.ResponseWriter, r *http.Request) {
+	kind, ok := s.kindFromPath(w, r)
+	if !ok {
+		return
+	}
+	sel, err := selector.Parse(r.URL.Query().Get("labelSelector"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "labelSelector: "+err.Error())
+		return
+	}
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = v1alpha1.DefaultNamespace
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	res, err := s.store.List(r.Context(), store.ListOptions{
+		Kind:       kind,
+		Namespace:  ns,
+		Selector:   sel,
+		Search:     r.URL.Query().Get("search"),
+		LatestOnly: true,
+		Limit:      limit,
+		Cursor:     r.URL.Query().Get("cursor"),
+		CanRead:    readPredicate(r),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// devai's client expects a bare JSON array per collection.
+	out := make([]v1alpha1.Object, 0, len(res.Items))
+	out = append(out, res.Items...)
+	if res.NextCursor != "" {
+		w.Header().Set("X-Next-Cursor", res.NextCursor)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) v0GetLatest(w http.ResponseWriter, r *http.Request) {
+	s.getObject(w, r, "")
+}
+
+func (s *Server) v0Get(w http.ResponseWriter, r *http.Request) {
+	s.getObject(w, r, chi.URLParam(r, "tag"))
+}
+
+func (s *Server) getObject(w http.ResponseWriter, r *http.Request, tag string) {
+	kind, ok := s.kindFromPath(w, r)
+	if !ok {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	obj, err := s.store.Get(r.Context(), kind, s.namespace(r), name, tag)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !auth.CanRead(identity(r), obj) {
+		// Do not reveal existence of artifacts the caller cannot read.
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, obj)
+}
+
+func (s *Server) v0Tags(w http.ResponseWriter, r *http.Request) {
+	kind, ok := s.kindFromPath(w, r)
+	if !ok {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	// Confirm read access via the latest tag before listing tags.
+	latest, err := s.store.Get(r.Context(), kind, s.namespace(r), name, "")
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err == nil && !auth.CanRead(identity(r), latest) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	tags, err := s.store.ListTags(r.Context(), kind, s.namespace(r), name)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"name": name, "tags": tags})
+}
+
+func (s *Server) v0Publish(w http.ResponseWriter, r *http.Request) {
+	kind, ok := s.kindFromPath(w, r)
+	if !ok {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	obj, err := decodeObject(body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if obj.Kind == "" {
+		obj.Kind = kind
+	}
+	s.applyOne(w, r, obj, http.StatusCreated)
+}
+
+// applyOne validates, authorizes, and upserts a single object.
+func (s *Server) applyOne(w http.ResponseWriter, r *http.Request, obj v1alpha1.Object, okStatus int) {
+	if err := obj.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	normalized := obj.Normalized()
+	if !auth.CanWrite(identity(r), normalized) {
+		writeErr(w, http.StatusForbidden, "insufficient permission to publish to tenant "+normalized.Metadata.TenantID)
+		return
+	}
+	result, created, err := s.store.Apply(r.Context(), obj)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = okStatus
+	}
+	writeJSON(w, status, result)
+}
+
+func (s *Server) v0Delete(w http.ResponseWriter, r *http.Request) {
+	kind, ok := s.kindFromPath(w, r)
+	if !ok {
+		return
+	}
+	name, tag := chi.URLParam(r, "name"), chi.URLParam(r, "tag")
+	obj, err := s.store.Get(r.Context(), kind, s.namespace(r), name, tag)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err == nil && !auth.CanWrite(identity(r), obj) {
+		writeErr(w, http.StatusForbidden, "insufficient permission")
+		return
+	}
+	if err := s.store.Delete(r.Context(), kind, s.namespace(r), name, tag); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// v0Apply ingests a multi-doc YAML stream of resources (kubectl-apply-like).
+func (s *Server) v0Apply(w http.ResponseWriter, r *http.Request) {
+	objs, err := decodeMultiDoc(r.Body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	id := identity(r)
+	type applied struct {
+		Kind      v1alpha1.Kind `json:"kind"`
+		Name      string        `json:"name"`
+		Namespace string        `json:"namespace"`
+		Tag       string        `json:"tag"`
+		Created   bool          `json:"created"`
+		Error     string        `json:"error,omitempty"`
+	}
+	results := make([]applied, 0, len(objs))
+	httpStatus := http.StatusOK
+	for _, obj := range objs {
+		a := applied{Kind: obj.Kind, Name: obj.Metadata.Name}
+		if err := obj.Validate(); err != nil {
+			a.Error = err.Error()
+			httpStatus = http.StatusMultiStatus
+			results = append(results, a)
+			continue
+		}
+		normalized := obj.Normalized()
+		a.Namespace, a.Tag = normalized.Metadata.Namespace, normalized.Metadata.Tag
+		if !auth.CanWrite(id, normalized) {
+			a.Error = "forbidden: cannot write tenant " + normalized.Metadata.TenantID
+			httpStatus = http.StatusMultiStatus
+			results = append(results, a)
+			continue
+		}
+		res, created, err := s.store.Apply(r.Context(), obj)
+		if err != nil {
+			a.Error = err.Error()
+			httpStatus = http.StatusMultiStatus
+		} else {
+			a.Created = created
+			a.Namespace, a.Tag = res.Metadata.Namespace, res.Metadata.Tag
+		}
+		results = append(results, a)
+	}
+	writeJSON(w, httpStatus, map[string]interface{}{"applied": results, "count": len(results)})
+}
+
+func (s *Server) v0DeleteApply(w http.ResponseWriter, r *http.Request) {
+	objs, err := decodeMultiDoc(r.Body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	id := identity(r)
+	deleted := 0
+	for _, obj := range objs {
+		n := obj.Normalized()
+		existing, gerr := s.store.Get(r.Context(), n.Kind, n.Metadata.Namespace, n.Metadata.Name, n.Metadata.Tag)
+		if gerr != nil || !auth.CanWrite(id, existing) {
+			continue
+		}
+		if s.store.Delete(r.Context(), n.Kind, n.Metadata.Namespace, n.Metadata.Name, n.Metadata.Tag) == nil {
+			deleted++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": deleted})
+}
+
+func (s *Server) v0Render(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	var req render.Request
+	if err := decodeJSON(r.Body, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Resolve the prompt: name may carry a @version/@label suffix.
+	base, ref := splitRef(name)
+	obj, err := s.store.Get(r.Context(), v1alpha1.KindPrompt, s.namespace(r), base, ref)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "prompt not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !auth.CanRead(identity(r), obj) {
+		writeErr(w, http.StatusNotFound, "prompt not found")
+		return
+	}
+	out, err := render.Prompt(obj, req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "render: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// splitRef splits "name@ref" into ("name","ref"); ref "" means latest.
+func splitRef(s string) (string, string) {
+	if i := strings.LastIndex(s, "@"); i > 0 {
+		return s[:i], s[i+1:]
+	}
+	return s, ""
+}

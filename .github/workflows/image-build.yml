@@ -1,0 +1,121 @@
+name: image build
+
+# Builds and pushes the agentic-registry container image to GHCR on every
+# push to main (and on demand). Pull requests build the image to catch
+# Dockerfile breakage but do not push. Tagged releases are handled
+# separately by release.yml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "pkg/**"
+      - "adapters/**"
+      - "web/**"
+      - "go.mod"
+      - "go.sum"
+      - "deploy/Dockerfile"
+      - ".github/workflows/image-build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "pkg/**"
+      - "adapters/**"
+      - "web/**"
+      - "go.mod"
+      - "go.sum"
+      - "deploy/Dockerfile"
+      - ".github/workflows/image-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write   # upload Trivy SARIF
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: build & push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=agentic-registry
+            org.opencontainers.image.description=Gateway-neutral registry for skills, tools, MCPs, prompts, workflows, and blueprints
+
+      - name: Compute cache ref
+        id: cache
+        run: echo "ref=$(echo '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=registry,ref=${{ steps.cache.outputs.ref }}
+          cache-to: type=registry,ref=${{ steps.cache.outputs.ref }},mode=max
+          provenance: false
+
+      - name: Trivy vulnerability scan
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+        continue-on-error: true
+
+      - name: Upload Trivy to GitHub Security
+        if: github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+        continue-on-error: true
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## Image Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Branch:** ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Commit:** \`${GITHUB_SHA::8}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "**Status:** Pushed to GHCR" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Status:** Built (not pushed — PR)" >> "$GITHUB_STEP_SUMMARY"
+          fi

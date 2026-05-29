@@ -1,0 +1,15 @@
+# pnpm 11 enforces two supply-chain gates by default that break reproducible,
+# non-interactive container builds. Both settings MUST live here, not in
+# .npmrc — pnpm 11 reads its own settings only from pnpm-workspace.yaml and
+# silently ignores `minimum-release-age` / build approvals in .npmrc.
+#
+# 1. minimumReleaseAge: rejects any lockfile entry published within a ~24h
+#    cutoff. Our deps are public, pinned in a committed lockfile, and
+#    reviewed, so freshly-cut releases must not fail the build. Disable it.
+minimumReleaseAge: 0
+#
+# 2. allowBuilds: pnpm 11 refuses to run dependency postinstall scripts unless
+#    explicitly approved, and exits non-zero (ERR_PNPM_IGNORED_BUILDS) when it
+#    skips one. vite needs esbuild's postinstall to set up its native binary.
+allowBuilds:
+  esbuild: true

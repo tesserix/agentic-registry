@@ -1,0 +1,114 @@
+name: release
+
+# Tag-driven release: push a `v*` tag (or run manually with a version) to
+# build and push the versioned + latest image and cut a GitHub Release with
+# an auto-generated changelog. Continuous builds on main live in
+# image-build.yml.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write   # create the GitHub Release / tag
+  packages: write
+  id-token: write   # provenance attestation
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    name: build & push release image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            VERSION=${{ steps.version.outputs.tag }}
+          provenance: true
+          sbom: true
+
+  create-release:
+    name: create GitHub release
+    runs-on: ubuntu-latest
+    needs: [image]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          prev_tag=$(git tag --sort=-v:refname | grep -v "^${{ steps.version.outputs.tag }}$" | head -1 || true)
+          if [[ -z "$prev_tag" ]]; then
+            changelog=$(git log --pretty=format:"- %s (%h)" --no-merges | head -50)
+          else
+            changelog=$(git log "${prev_tag}..HEAD" --pretty=format:"- %s (%h)" --no-merges)
+          fi
+          {
+            echo "body<<EOF"
+            echo "## agentic-registry ${{ steps.version.outputs.tag }}"
+            echo ""
+            echo "### Container image"
+            echo "- \`${{ env.IMAGE }}:${{ steps.version.outputs.tag }}\`"
+            echo "- \`${{ env.IMAGE }}:latest\`"
+            echo ""
+            echo "### Changes"
+            echo "$changelog"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: agentic-registry ${{ steps.version.outputs.tag }}
+          body: ${{ steps.changelog.outputs.body }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, '-rc') || contains(steps.version.outputs.tag, '-beta') }}

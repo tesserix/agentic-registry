@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose a capability for Agentic Registry
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that the registry can't do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: checkboxes
+    id: invariant
+    attributes:
+      label: Architecture invariant
+      options:
+        - label: This does NOT make the registry an auth or proxy layer (gateway logic belongs in an adapter).
+          required: true

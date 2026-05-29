@@ -1,0 +1,35 @@
+# ArgoCD Application for a LOCAL kind cluster (GitOps path).
+#
+# The Helm chart lives in the tesserix-k8s repo (charts/apps/agentic-registry).
+# Point `repoURL` at whatever your local Argo can reach for that repo — a local
+# Gitea, a file-backed mirror, or your tesserix-k8s remote. The chart path and
+# the local values file are what matter.
+#
+# Prereqs: apply k8s/secrets.yaml first, and load the image into kind
+# (see scripts/kind-deploy.sh). Then:  kubectl apply -f k8s/argocd-application-local.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agentic-registry-local
+  namespace: argocd
+  labels:
+    environment: local
+spec:
+  project: default
+  source:
+    # CHANGE ME to your local-reachable tesserix-k8s repo URL.
+    repoURL: https://github.com/tesserix/tesserix-k8s.git
+    targetRevision: HEAD
+    path: charts/apps/agentic-registry
+    helm:
+      valueFiles:
+        - values-local.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agentic-registry
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

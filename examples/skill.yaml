@@ -1,0 +1,15 @@
+# A Skill artifact. Publish with:  agentic apply -f examples/skill.yaml
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Skill
+metadata:
+  name: senior-developer
+  visibility: public
+  labels:
+    domain: code-review
+    language: go
+    stability: stable
+spec:
+  title: Senior Developer
+  description: Writes and reviews production Go services with an emphasis on tests.
+  source:
+    repository: https://github.com/tesserix/devai

@@ -1,0 +1,30 @@
+# Go
+/bin/
+*.test
+*.out
+coverage.*
+
+# Node / web
+web/node_modules/
+web/dist/
+web/.vite/
+node_modules/
+
+# Local
+.env
+.env.local
+*.local
+.DS_Store
+
+# Real (filled-in) local secrets — never commit; only the .example is tracked.
+k8s/secrets.yaml
+**secrets.yaml
+
+# Build artifacts
+/dist/
+/tmp/
+
+# Editor
+.idea/
+.vscode/
+*.swp
