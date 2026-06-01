@@ -88,6 +88,23 @@ func (s *Server) namespace(r *http.Request) string {
 	return v1alpha1.DefaultNamespace
 }
 
+// listNamespace resolves the namespace *filter* for browse/list/search requests.
+// Unlike s.namespace (used for get/publish, which target one namespace), a list
+// has no inherent namespace: an absent param means "browse every namespace the
+// caller can read" — visibility/tenant RBAC (CanRead) is the real isolation
+// boundary, namespace is just an optional grouping filter. We also fold the
+// common unset-frontend sentinels ("all", "*", "undefined", "null") to the
+// all-namespaces form so a UI that omits or stubs the param still gets results.
+// The store treats "" / "all" as no namespace filter (memory.go, postgres.go).
+func listNamespace(r *http.Request) string {
+	switch ns := strings.TrimSpace(r.URL.Query().Get("namespace")); ns {
+	case "", "all", "*", "undefined", "null":
+		return ""
+	default:
+		return ns
+	}
+}
+
 func (s *Server) v0List(w http.ResponseWriter, r *http.Request) {
 	kind, ok := s.kindFromPath(w, r)
 	if !ok {
@@ -98,14 +115,10 @@ func (s *Server) v0List(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "labelSelector: "+err.Error())
 		return
 	}
-	ns := r.URL.Query().Get("namespace")
-	if ns == "" {
-		ns = v1alpha1.DefaultNamespace
-	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	res, err := s.store.List(r.Context(), store.ListOptions{
 		Kind:       kind,
-		Namespace:  ns,
+		Namespace:  listNamespace(r), // absent → all readable namespaces
 		Selector:   sel,
 		Search:     r.URL.Query().Get("search"),
 		LatestOnly: true,
@@ -132,22 +145,19 @@ func (s *Server) v0List(w http.ResponseWriter, r *http.Request) {
 // pgvector enabled the store returns cosine-ranked matches; otherwise it falls
 // back to substring. Kind is left empty so every collection is searched at once.
 func (s *Server) v0Search(w http.ResponseWriter, r *http.Request) {
+	// Empty q = browse (list latest across every readable namespace) instead of
+	// an empty result, so the marketplace/command palette shows the catalog on
+	// open; a non-empty q runs the ranked (pgvector or substring) search.
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if q == "" {
-		writeJSON(w, http.StatusOK, []v1alpha1.Object{})
-		return
-	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-	ns := r.URL.Query().Get("namespace")
-	if ns == "" {
-		ns = v1alpha1.DefaultNamespace
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 200 {
+		limit = 200
 	}
 	res, err := s.store.List(r.Context(), store.ListOptions{
-		Namespace:  ns,
-		Search:     q,
+		Namespace:  listNamespace(r), // absent → all readable namespaces
+		Search:     q,                // "" → no search filter (browse)
 		LatestOnly: true,
 		Limit:      limit,
 		CanRead:    readPredicate(r),
