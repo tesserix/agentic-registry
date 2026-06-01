@@ -6,8 +6,14 @@ import { type Node, type Edge, MarkerType } from "@xyflow/react";
 export interface FlowNode {
   id: string;
   label: string;
-  type?: string; // see NODE_KINDS
+  type?: string; // visual node type — see NODE_KINDS
   position?: { x: number; y: number };
+  // Optional link to a real catalog artifact this node represents.
+  // refKind is the registry Kind ("Skill" | "Tool" | "MCPServer" | "Prompt" |
+  // "Agent" | "Workflow"); ref is its name. Lets a Workflow/Blueprint node
+  // point at a concrete, resolvable artifact instead of being free-text.
+  ref?: string;
+  refKind?: string;
 }
 export interface FlowEdge {
   id?: string;
@@ -111,7 +117,12 @@ export function toReactFlow(spec: Record<string, unknown> | undefined): { nodes:
     id: n.id,
     type: "step",
     position: n.position ?? layout[n.id] ?? { x: 24, y: 24 },
-    data: { label: n.label || n.id, kind: n.type ?? "task" },
+    data: {
+      label: n.label || n.id,
+      kind: n.type ?? "task",
+      ...(n.ref ? { ref: n.ref } : {}),
+      ...(n.refKind ? { refKind: n.refKind } : {}),
+    },
   }));
   const edges: Edge[] = rawEdges.map((e, i) => {
     const dotted = isDotted(e);
@@ -130,12 +141,17 @@ export function toReactFlow(spec: Record<string, unknown> | undefined): { nodes:
 
 export function toSpec(nodes: Node[], edges: Edge[]): { nodes: FlowNode[]; edges: FlowEdge[] } {
   return {
-    nodes: nodes.map((n) => ({
-      id: n.id,
-      label: String((n.data as { label?: string })?.label ?? n.id),
-      type: String((n.data as { kind?: string })?.kind ?? "task"),
-      position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
-    })),
+    nodes: nodes.map((n) => {
+      const d = n.data as { label?: string; kind?: string; ref?: string; refKind?: string };
+      return {
+        id: n.id,
+        label: String(d?.label ?? n.id),
+        type: String(d?.kind ?? "task"),
+        position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
+        ...(d?.ref ? { ref: d.ref } : {}),
+        ...(d?.refKind ? { refKind: d.refKind } : {}),
+      };
+    }),
     edges: edges.map((e) => ({
       id: e.id,
       from: e.source,

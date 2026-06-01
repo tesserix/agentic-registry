@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -20,13 +20,16 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Plus, Save, Trash2, Loader2, Check, Workflow as WorkflowIcon } from "lucide-react";
-import { api, userLabels, type Artifact } from "../lib/api";
+import { api, userLabels, pluralForKind, type Artifact } from "../lib/api";
 import { toReactFlow, toSpec, nodeKind, defaultNodeType, typeOptions, FLOW_EDGE_COLOR } from "../lib/flow";
+
+// Registry kinds a flow node can link to. "" = not linked (free-text step).
+const LINKABLE_KINDS = ["", "Skill", "Tool", "MCPServer", "Prompt", "Agent", "Workflow"];
 
 // Custom node: a labelled "step" coloured by its kind. Handles on all four
 // sides + loose connection mode let you wire any direction (incl. top↔bottom).
 function StepNode({ data, selected }: NodeProps) {
-  const d = data as { label?: string; kind?: string };
+  const d = data as { label?: string; kind?: string; ref?: string; refKind?: string };
   const k = nodeKind(d.kind);
   return (
     <div
@@ -38,7 +41,9 @@ function StepNode({ data, selected }: NodeProps) {
       <Handle id="l" type="target" position={Position.Left} className="flow-handle" />
       <span className="flow-node-dot" style={{ background: k.color }} />
       <span className="flow-node-label">{d.label || "untitled"}</span>
-      <span className="flow-node-kind" style={{ color: k.color }}>{d.kind ?? "task"}</span>
+      <span className="flow-node-kind" style={{ color: k.color }}>
+        {d.ref ? `${d.refKind}: ${d.ref}` : d.kind ?? "task"}
+      </span>
       <Handle id="r" type="source" position={Position.Right} className="flow-handle" />
       <Handle id="b" type="source" position={Position.Bottom} className="flow-handle" />
     </div>
@@ -64,6 +69,11 @@ export default function FlowCanvas({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Catalog options for the linked-resource picker, fetched per kind on demand
+  // and cached. Keyed by registry Kind ("Skill" → ["code-review", …]).
+  const [refOptions, setRefOptions] = useState<Record<string, string[]>>({});
+  const ns = artifact.metadata.namespace;
 
   const dark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
   const nodeTypes = useMemo(() => ({ step: StepNode }), []);
@@ -132,7 +142,26 @@ export default function FlowCanvas({
   }
 
   const selNode = nodes.find((n) => n.id === selected);
-  const selData = selNode?.data as { label?: string; kind?: string } | undefined;
+  const selData = selNode?.data as { label?: string; kind?: string; ref?: string; refKind?: string } | undefined;
+
+  // Lazily fetch the catalog names for whichever Kind the selected node links
+  // to, so the ref combobox can suggest real artifacts.
+  const selRefKind = selData?.refKind ?? "";
+  useEffect(() => {
+    if (!selRefKind || refOptions[selRefKind]) return;
+    let live = true;
+    api
+      .list(pluralForKind(selRefKind), { namespace: ns })
+      .then((items) => {
+        if (live) setRefOptions((m) => ({ ...m, [selRefKind]: items.map((a) => a.metadata.name) }));
+      })
+      .catch(() => {
+        if (live) setRefOptions((m) => ({ ...m, [selRefKind]: [] }));
+      });
+    return () => {
+      live = false;
+    };
+  }, [selRefKind, ns, refOptions]);
 
   return (
     <div className="card flow-theme overflow-hidden" style={{ height: 480, padding: 0 }}>
@@ -194,6 +223,40 @@ export default function FlowCanvas({
                   </option>
                 ))}
               </select>
+
+              {/* Link this step to a real catalog artifact (optional). */}
+              <label className="flow-field-label mt-2">Linked resource</label>
+              <select
+                className="field"
+                value={selData?.refKind ?? ""}
+                onChange={(e) => patchSelected({ refKind: e.target.value, ...(e.target.value ? {} : { ref: undefined }) })}
+              >
+                {LINKABLE_KINDS.map((k) => (
+                  <option key={k || "none"} value={k}>
+                    {k || "— none —"}
+                  </option>
+                ))}
+              </select>
+              {selData?.refKind && (
+                <>
+                  <input
+                    className="field mt-2"
+                    list="flow-ref-options"
+                    placeholder={`${selData.refKind} name`}
+                    value={selData?.ref ?? ""}
+                    onChange={(e) => patchSelected({ ref: e.target.value })}
+                  />
+                  <datalist id="flow-ref-options">
+                    {(refOptions[selData.refKind] ?? []).map((n) => (
+                      <option key={n} value={n} />
+                    ))}
+                  </datalist>
+                  {selData?.ref && !(refOptions[selData.refKind] ?? []).includes(selData.ref) && (
+                    <div className="flow-field-label" style={{ color: "#dc2626" }}>not in catalog</div>
+                  )}
+                </>
+              )}
+
               <button className="flow-btn flow-btn-danger mt-3 w-full justify-center" onClick={deleteSelected}>
                 <Trash2 className="w-3.5 h-3.5" /> Delete step
               </button>
