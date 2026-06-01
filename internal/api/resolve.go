@@ -17,9 +17,9 @@ import (
 // adapters (kagent / agentgateway) consume — they should never re-implement
 // reference resolution.
 type ResolvedAgent struct {
-	Agent      v1alpha1.Object            `json:"agent"`
+	Agent      v1alpha1.Object              `json:"agent"`
 	Resolved   map[string][]v1alpha1.Object `json:"resolved"`
-	Unresolved []UnresolvedRef            `json:"unresolved,omitempty"`
+	Unresolved []UnresolvedRef              `json:"unresolved,omitempty"`
 }
 
 // UnresolvedRef records a reference that didn't resolve (missing or not

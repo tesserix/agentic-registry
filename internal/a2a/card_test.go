@@ -66,7 +66,7 @@ func TestCard_PassthroughAndDerivedFields(t *testing.T) {
 			"url":                "https://oncall.svc/a2a/v1",
 			"preferredTransport": "GRPC",
 			"capabilities":       map[string]any{"streaming": true},
-			"futureField":        "kept", // unknown field must pass through
+			"futureField":        "kept",  // unknown field must pass through
 			"version":            "9.9.9", // must be IGNORED (derived from tag)
 		},
 	}), nil, Options{RegistryURL: "https://reg.example"})
@@ -116,8 +116,8 @@ func TestCard_LinkedSkillResolvedFromRegistry(t *testing.T) {
 	}
 	c, err := Card(agent(map[string]any{
 		"skills": []any{
-			"kubernetes-troubleshooter",   // linked
-			"does-not-exist",              // dangling ref -> skipped
+			"kubernetes-troubleshooter", // linked
+			"does-not-exist",            // dangling ref -> skipped
 			map[string]any{"name": "Inline Skill", "description": "one-off"}, // inline
 		},
 	}), resolve, Options{})
