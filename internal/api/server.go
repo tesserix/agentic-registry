@@ -112,18 +112,33 @@ func (s *Server) signingKey(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// cors applies a permissive-but-configurable CORS policy for the marketplace UI.
+// cors applies a configurable CORS policy. CORS_ORIGINS="*" echoes any Origin
+// back (handy for local dev); otherwise an Origin is reflected only on an EXACT
+// allow-list match. The previous substring check (strings.Contains) was too
+// loose — e.g. "tesserix.app" would have matched an allowed
+// "https://aregistry.tesserix.app". Credentials are never allowed, so a
+// cross-origin caller can read only what an unauthenticated request returns.
 func (s *Server) cors(next http.Handler) http.Handler {
-	allowed := strings.Join(s.cfg.CORSOrigins, ", ")
+	allowAll := false
+	allowed := make(map[string]struct{}, len(s.cfg.CORSOrigins))
+	for _, o := range s.cfg.CORSOrigins {
+		switch o = strings.TrimSpace(o); o {
+		case "":
+		case "*":
+			allowAll = true
+		default:
+			allowed[o] = struct{}{}
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			if allowed == "*" || strings.Contains(allowed, origin) {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-			}
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			if _, ok := allowed[origin]; allowAll || ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			}
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
