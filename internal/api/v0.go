@@ -88,6 +88,35 @@ func (s *Server) namespace(r *http.Request) string {
 	return v1alpha1.DefaultNamespace
 }
 
+// resolveNamespace picks the namespace for a name-scoped read (get/tags/
+// revisions). An explicit ?namespace= is honored verbatim. When it is absent
+// the registry has no single home for an artifact — it may live in any
+// namespace (e.g. devai agents, MCP servers) — so resolve by name across every
+// namespace the caller can read (the same set the catalog list browses) and
+// return the match. This makes shared/bookmarked detail URLs that omit the
+// namespace resolve instead of 404ing against "default". Falls back to
+// DefaultNamespace when nothing matches, preserving prior behavior.
+func (s *Server) resolveNamespace(r *http.Request, kind v1alpha1.Kind, name string) string {
+	if ns := strings.TrimSpace(r.URL.Query().Get("namespace")); ns != "" {
+		return ns
+	}
+	res, err := s.store.List(r.Context(), store.ListOptions{
+		Kind:       kind,
+		Namespace:  "", // across every readable namespace
+		LatestOnly: true,
+		CanRead:    readPredicate(r),
+		Limit:      1 << 30,
+	})
+	if err == nil {
+		for _, o := range res.Items {
+			if o.Metadata.Name == name {
+				return o.Metadata.Namespace
+			}
+		}
+	}
+	return v1alpha1.DefaultNamespace
+}
+
 // listNamespace resolves the namespace *filter* for browse/list/search requests.
 // Unlike s.namespace (used for get/publish, which target one namespace), a list
 // has no inherent namespace: an absent param means "browse every namespace the
@@ -187,7 +216,7 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request, tag string) {
 		return
 	}
 	name := chi.URLParam(r, "name")
-	obj, err := s.store.Get(r.Context(), kind, s.namespace(r), name, tag)
+	obj, err := s.store.Get(r.Context(), kind, s.resolveNamespace(r, kind, name), name, tag)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -210,8 +239,9 @@ func (s *Server) v0Tags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := chi.URLParam(r, "name")
+	ns := s.resolveNamespace(r, kind, name)
 	// Confirm read access via the latest tag before listing tags.
-	latest, err := s.store.Get(r.Context(), kind, s.namespace(r), name, "")
+	latest, err := s.store.Get(r.Context(), kind, ns, name, "")
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -220,7 +250,7 @@ func (s *Server) v0Tags(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	tags, err := s.store.ListTags(r.Context(), kind, s.namespace(r), name)
+	tags, err := s.store.ListTags(r.Context(), kind, ns, name)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -239,8 +269,9 @@ func (s *Server) v0Revisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := chi.URLParam(r, "name")
+	ns := s.resolveNamespace(r, kind, name)
 	// Confirm read access via the latest tag before exposing history.
-	latest, err := s.store.Get(r.Context(), kind, s.namespace(r), name, "")
+	latest, err := s.store.Get(r.Context(), kind, ns, name, "")
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -249,7 +280,7 @@ func (s *Server) v0Revisions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	revs, err := s.store.ListRevisions(r.Context(), kind, s.namespace(r), name)
+	revs, err := s.store.ListRevisions(r.Context(), kind, ns, name)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
