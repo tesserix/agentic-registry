@@ -90,6 +90,41 @@ func TestExportKagent(t *testing.T) {
 	}
 }
 
+func TestExportKagentAll(t *testing.T) {
+	srv, st := testServer(t)
+	seedMCPAndAgent(t, st)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/export/kagent?namespace=devai", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"kind: Agent", "kind: ToolServer", "name: reviewer"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("kagent-all export missing %q\n%s", want, body)
+		}
+	}
+}
+
+func TestExportKagentAllLabelSelector(t *testing.T) {
+	srv, st := testServer(t)
+	seedMCPAndAgent(t, st) // "reviewer" has no labels
+
+	// A selector that matches nothing → empty output, still 200.
+	req := httptest.NewRequest(http.MethodGet, "/v0/export/kagent?namespace=devai&labelSelector=devai.io/runtime%3Dkagent", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "kind: Agent") {
+		t.Errorf("selector should have excluded the unlabelled agent:\n%s", rec.Body.String())
+	}
+}
+
 func TestExportKagentRejectsNonAgent(t *testing.T) {
 	srv, st := testServer(t)
 	seedMCPAndAgent(t, st)

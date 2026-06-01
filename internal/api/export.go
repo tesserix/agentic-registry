@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/tesserix/agentic-registry/adapters/agentgateway"
 	"github.com/tesserix/agentic-registry/adapters/kagent"
 	"github.com/tesserix/agentic-registry/internal/auth"
+	"github.com/tesserix/agentic-registry/internal/selector"
 	"github.com/tesserix/agentic-registry/internal/store"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
@@ -106,6 +108,55 @@ func (s *Server) v0ExportKagent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeYAML(w, out)
+}
+
+// v0ExportKagentAll renders every Agent matching an optional labelSelector
+// (e.g. devai.io/runtime=kagent) into kagent.dev Agent + ToolServer YAML, as
+// one multi-doc stream. This is what the kagent agent-sync Job applies so
+// long-lived agents become controller-managed. Query params mirror the
+// per-agent endpoint, plus:
+//
+//	namespace      registry namespace to read agents from (default: DefaultNamespace)
+//	labelSelector  filter agents (default: all in the namespace)
+func (s *Server) v0ExportKagentAll(w http.ResponseWriter, r *http.Request) {
+	sel, err := selector.Parse(r.URL.Query().Get("labelSelector"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "labelSelector: "+err.Error())
+		return
+	}
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = v1alpha1.DefaultNamespace
+	}
+	res, err := s.store.List(r.Context(), store.ListOptions{
+		Kind:       v1alpha1.KindAgent,
+		Namespace:  ns,
+		Selector:   sel,
+		LatestOnly: true,
+		CanRead:    readPredicate(r),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	opts := kagent.Options{
+		Namespace:      r.URL.Query().Get("targetNamespace"),
+		ModelConfigRef: r.URL.Query().Get("modelConfig"),
+		GatewayURL:     r.URL.Query().Get("gatewayUrl"),
+	}
+	id := identity(r)
+	var buf bytes.Buffer
+	for _, agent := range res.Items {
+		agent = s.withIdentity(agent)
+		resolved, _ := s.resolveAgentRefs(r.Context(), id, agent)
+		out, err := kagent.Build(agent, resolved["mcpServers"], opts)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		buf.Write(out)
+	}
+	writeYAML(w, buf.Bytes())
 }
 
 func writeYAML(w http.ResponseWriter, body []byte) {

@@ -41,6 +41,9 @@ func (s *Server) mountV0(r chi.Router) {
 		// (AgentgatewayBackend + HTTPRoute). kagent export is per-agent, mounted
 		// in the collection route below.
 		r.Get("/export/agentgateway", s.v0ExportAgentgateway)
+		// kagent: every (optionally label-filtered) agent → Agent + ToolServer
+		// CRs, applied by the kagent agent-sync Job.
+		r.Get("/export/kagent", s.v0ExportKagentAll)
 
 		// Per-collection CRUD.
 		r.Route("/{plural}", func(r chi.Router) {
