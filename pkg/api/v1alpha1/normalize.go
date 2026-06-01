@@ -67,5 +67,10 @@ func (o *Object) Validate() error {
 	default:
 		return fmt.Errorf("invalid visibility %q (want public|internal|private)", o.Metadata.Visibility)
 	}
+	// Per-kind spec shape check (lenient: known fields only, unknown pass
+	// through). Returns a *SpecError so the API layer can surface field errors.
+	if err := ValidateSpec(o.Kind, o.Spec); err != nil {
+		return err
+	}
 	return nil
 }

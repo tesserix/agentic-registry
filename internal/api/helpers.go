@@ -22,6 +22,23 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
+// writeValidationErr emits a 400. When the error carries per-field spec
+// problems (*v1alpha1.SpecError), the `fields` array lets the authoring UI mark
+// the exact offending inputs; otherwise it degrades to a plain message.
+func writeValidationErr(w http.ResponseWriter, err error) {
+	if se, ok := err.(*v1alpha1.SpecError); ok {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    http.StatusBadRequest,
+				"message": se.Error(),
+				"fields":  se.Fields(),
+			},
+		})
+		return
+	}
+	writeErr(w, http.StatusBadRequest, err.Error())
+}
+
 // readPredicate builds the visibility/RBAC pre-filter for the request's caller.
 // It is passed to the store so filtering happens before the label selector and
 // before pagination.

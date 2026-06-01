@@ -87,6 +87,10 @@ export default function ArtifactEditor({
   function onField(path: string, value: string) {
     applyDoc(setPath(doc, path, value));
   }
+  // Generic setter for non-string field values (arrays from ref pickers, etc.).
+  function onFieldVal(path: string, value: unknown) {
+    applyDoc(setPath(doc, path, value));
+  }
   function onLabels(rows: [string, string][]) {
     setLabelRows(rows);
     applyDoc(setPath(doc, "metadata.labels", labelsObject(rows)));
@@ -192,15 +196,47 @@ export default function ArtifactEditor({
                 (<span className="font-mono">v0.0.N</span>), or set one (e.g. <span className="font-mono">v1.2.0</span>) to pin.
               </div>
             )}
-            {fields.map((f) => (
-              <FieldInput
-                key={f.path}
-                f={f}
-                value={String(getPath(doc, f.path) ?? "")}
-                onChange={(v) => onField(f.path, v)}
-                disabled={mode === "edit" && f.path === "metadata.name"}
-              />
-            ))}
+            {fields.map((f) => {
+              if (f.type === "refList") {
+                return (
+                  <RefListInput
+                    key={f.path}
+                    f={f}
+                    value={(getPath(doc, f.path) as unknown[]) ?? []}
+                    onChange={(v) => onFieldVal(f.path, v)}
+                  />
+                );
+              }
+              if (f.type === "group") {
+                return (
+                  <div key={f.path}>
+                    <label className="block text-[12px] font-medium mb-1.5" style={{ color: "var(--ink-soft)" }}>
+                      {f.label}
+                    </label>
+                    {f.help && <p className="text-[11px] mb-2 -mt-1" style={{ color: "var(--ink-muted)" }}>{f.help}</p>}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-md p-3" style={{ background: "var(--surface-muted)", border: "1px solid var(--border-subtle)" }}>
+                      {(f.children ?? []).map((c) => (
+                        <FieldInput
+                          key={c.path}
+                          f={c}
+                          value={String(getPath(doc, `${f.path}.${c.path}`) ?? "")}
+                          onChange={(v) => onField(`${f.path}.${c.path}`, v)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <FieldInput
+                  key={f.path}
+                  f={f}
+                  value={String(getPath(doc, f.path) ?? "")}
+                  onChange={(v) => onField(f.path, v)}
+                  disabled={mode === "edit" && f.path === "metadata.name"}
+                />
+              );
+            })}
 
             {/* Labels */}
             <div>
@@ -358,6 +394,113 @@ function FieldInput({ f, value, onChange, disabled = false }: { f: Field; value:
           onChange={(e) => onChange(e.target.value)}
         />
       )}
+      {f.help && (
+        <p className="text-[11px] mt-1" style={{ color: "var(--ink-muted)" }}>
+          {f.help}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// RefListInput is a catalog-backed multi-select for an Agent's composition
+// references (skills/tools/mcpServers/prompts). It fetches candidate names from
+// the registry, lets the author add by selection or free text, preserves inline
+// (object) entries, and flags a selected name that isn't in the catalog (the
+// server enforces existence only when ValidateRefs is on, so this is a hint).
+function RefListInput({
+  f,
+  value,
+  onChange,
+}: {
+  f: Field;
+  value: unknown[];
+  onChange: (v: unknown[]) => void;
+}) {
+  const [candidates, setCandidates] = useState<string[]>([]);
+  const [draft, setDraft] = useState("");
+  const [unreachable, setUnreachable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .list(f.itemKind ?? "skills")
+      .then((items) => {
+        if (!cancelled) setCandidates(items.map((a) => a.metadata.name));
+      })
+      .catch(() => {
+        if (!cancelled) setUnreachable(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [f.itemKind]);
+
+  // Normalize each entry to a display name (string refs and inline {name|id}).
+  const entries = value.map((e) =>
+    typeof e === "string" ? e : ((e as Record<string, unknown>)?.name as string) ?? ((e as Record<string, unknown>)?.id as string) ?? "(inline)",
+  );
+
+  function add(name: string) {
+    const n = name.trim();
+    if (!n || entries.includes(n)) return;
+    onChange([...value, n]);
+    setDraft("");
+  }
+  function remove(i: number) {
+    onChange(value.filter((_, idx) => idx !== i));
+  }
+
+  const remaining = candidates.filter((c) => !entries.includes(c));
+
+  return (
+    <div>
+      <label className="block text-[12px] font-medium mb-1.5" style={{ color: "var(--ink-soft)" }}>
+        {f.label}
+      </label>
+      {entries.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {entries.map((name, i) => {
+            const known = candidates.includes(name) || name === "(inline)" || unreachable;
+            return (
+              <span
+                key={`${name}-${i}`}
+                className="chip"
+                style={!known ? { background: "var(--error-soft-bg)", borderColor: "var(--error-soft-bd)", color: "var(--error-ink)" } : undefined}
+                title={!known ? "not found in the catalog" : undefined}
+              >
+                {name}
+                <button type="button" onClick={() => remove(i)} aria-label={`Remove ${name}`} className="ml-0.5">
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          className="field"
+          list={`reflist-${f.path}`}
+          placeholder={unreachable ? "catalog unavailable — type a name" : `Add a ${f.itemKind?.replace(/s$/, "") ?? "ref"}…`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add(draft);
+            }
+          }}
+        />
+        <datalist id={`reflist-${f.path}`}>
+          {remaining.map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
+        <button type="button" className="btn-secondary" onClick={() => add(draft)}>
+          <Plus className="w-4 h-4" /> Add
+        </button>
+      </div>
       {f.help && (
         <p className="text-[11px] mt-1" style={{ color: "var(--ink-muted)" }}>
           {f.help}

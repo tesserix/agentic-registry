@@ -5,7 +5,14 @@
 
 export const API_VERSION = "registry.agentic.dev/v1alpha1";
 
-export type FieldType = "text" | "textarea" | "select";
+export type FieldType =
+  | "text"
+  | "textarea"
+  | "select"
+  | "checkbox"
+  | "refList" // multi-select of catalog artifact names (itemKind = the plural)
+  | "group" // a nested object rendered from `children`
+  | "objectList"; // a list of records, each rendered from `children`
 
 export interface Field {
   path: string; // dot-path into the doc, e.g. "spec.title"
@@ -16,6 +23,8 @@ export interface Field {
   options?: string[];
   required?: boolean;
   mono?: boolean;
+  itemKind?: string; // for "refList": the plural to query, e.g. "skills"
+  children?: Field[]; // for "group" / "objectList": nested field shapes (paths are RELATIVE)
 }
 
 // Common metadata fields shared by every kind.
@@ -60,6 +69,24 @@ const SPEC: Record<string, Field[]> = {
   Agent: [
     { path: "spec.title", label: "Title", type: "text", placeholder: "On-Call Responder", required: true },
     { path: "spec.description", label: "Description", type: "textarea", placeholder: "What the agent does autonomously." },
+    {
+      path: "spec.model", label: "Model", type: "group", help: "The LLM this agent reasons with.", children: [
+        { path: "provider", label: "Provider", type: "select", options: ["", "anthropic", "openai", "google", "groq"] },
+        { path: "name", label: "Model name", type: "text", placeholder: "claude-sonnet-4", mono: true },
+        { path: "temperature", label: "Temperature", type: "text", placeholder: "0.3", mono: true, help: "0–2." },
+      ],
+    },
+    { path: "spec.systemPrompt", label: "System prompt", type: "textarea", placeholder: "You are an on-call SRE. …", help: "The agent's base instruction. References to Prompts below are available at runtime." },
+    { path: "spec.skills", label: "Skills", type: "refList", itemKind: "skills", help: "Registry Skills this agent can perform." },
+    { path: "spec.tools", label: "Tools", type: "refList", itemKind: "tools", help: "Registry Tools the agent may call." },
+    { path: "spec.mcpServers", label: "MCP servers", type: "refList", itemKind: "mcpservers", help: "MCP servers the agent connects to for tools." },
+    { path: "spec.prompts", label: "Prompts", type: "refList", itemKind: "prompts", help: "Reusable Prompts available to the agent." },
+    {
+      path: "spec.a2a", label: "A2A (advanced)", type: "group", help: "Agent-to-agent protocol config (optional).", children: [
+        { path: "url", label: "Service URL", type: "text", placeholder: "https://…", mono: true, help: "Where consumers reach this agent over A2A." },
+        { path: "preferredTransport", label: "Transport", type: "select", options: ["", "JSONRPC", "GRPC"] },
+      ],
+    },
   ],
 };
 
@@ -83,7 +110,13 @@ export function starter(kind: string): Record<string, unknown> {
     Prompt: { title: "", description: "", template: "" },
     Workflow: { title: "", description: "", nodes: [], edges: [] },
     Blueprint: { title: "", description: "", nodes: [], edges: [] },
-    Agent: { title: "", description: "" },
+    Agent: {
+      title: "", description: "",
+      model: { provider: "", name: "", temperature: "" },
+      systemPrompt: "",
+      skills: [], tools: [], mcpServers: [], prompts: [],
+      a2a: { url: "", preferredTransport: "" },
+    },
   };
   return { apiVersion: API_VERSION, kind, metadata: meta, spec: specByKind[kind] ?? specByKind.Skill };
 }

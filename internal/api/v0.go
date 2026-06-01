@@ -48,6 +48,11 @@ func (s *Server) mountV0(r chi.Router) {
 			r.Get("/{name}/card", s.v0AgentCard)
 			r.Get("/{name}/.well-known/agent-card.json", s.v0AgentCard)
 			r.Get("/{name}/{tag}/card", s.v0AgentCardTag)
+			// Composition resolution (Agent kind only): the agent plus its
+			// skills/tools/mcpServers/prompts fetched from the catalog. Powers
+			// the runtime + the kagent/agentgateway export adapters.
+			r.Get("/{name}/resolved", s.v0AgentResolved)
+			r.Get("/{name}/{tag}/resolved", s.v0AgentResolvedTag)
 			r.Get("/{name}/{tag}", s.v0Get)
 			r.Delete("/{name}/{tag}", s.v0Delete)
 		})
@@ -257,7 +262,7 @@ func (s *Server) v0Publish(w http.ResponseWriter, r *http.Request) {
 // applyOne validates, authorizes, and upserts a single object.
 func (s *Server) applyOne(w http.ResponseWriter, r *http.Request, obj v1alpha1.Object, okStatus int) {
 	if err := obj.Validate(); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeValidationErr(w, err)
 		return
 	}
 	normalized := obj.Normalized()
