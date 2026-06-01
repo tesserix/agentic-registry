@@ -36,10 +36,14 @@ permissions:
   contents: read
   packages: write
   security-events: write   # upload Trivy SARIF
+  id-token: write          # GCP Workload Identity Federation (WIF)
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  GCP_PROJECT_ID: tesseracthub-480811
+  GKE_CLUSTER: tesseract-prod-in-gke
+  GKE_REGION: asia-south1
 
 jobs:
   build:
@@ -89,6 +93,32 @@ jobs:
           cache-from: type=registry,ref=${{ steps.cache.outputs.ref }}
           cache-to: type=registry,ref=${{ steps.cache.outputs.ref }},mode=max
           provenance: false
+
+      # --- Roll the prod Deployment so it pulls the freshly pushed :latest.
+      # ArgoCD owns the manifests; this only restarts the pods (same image
+      # ref, new digest). Mirrors the devai build workflows. Skipped on PRs
+      # and on non-default branches; tolerant if WIF isn't configured yet.
+      - name: Authenticate to GCP (WIF)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        id: auth_wif
+        continue-on-error: true
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/849928263410/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-actions@tesseracthub-480811.iam.gserviceaccount.com
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Get GKE credentials
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.auth_wif.outcome == 'success'
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_REGION }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Restart agentregistry deployment
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.auth_wif.outcome == 'success'
+        run: kubectl rollout restart deployment/agentregistry -n agentregistry-system
 
       - name: Trivy vulnerability scan
         if: github.event_name != 'pull_request'

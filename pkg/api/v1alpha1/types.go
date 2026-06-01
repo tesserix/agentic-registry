@@ -103,6 +103,23 @@ type ObjectMeta struct {
 	CreatedAt         *time.Time `json:"createdAt,omitempty" yaml:"-"`
 	UpdatedAt         *time.Time `json:"updatedAt,omitempty" yaml:"-"`
 	DeletionTimestamp *time.Time `json:"deletionTimestamp,omitempty" yaml:"-"`
+
+	// Derived identity — computed at the read boundary (WithIdentity), never
+	// stored or accepted on ingest. The artifact-repository surface:
+	//   ARN       canonical, version-agnostic resource name
+	//   Digest    immutable content fingerprint ("sha256:<hex>")
+	//   Ref       pull reference for this version (…/name@tag)
+	//   DigestRef immutable, content-addressed pull reference (…/name@sha256:…)
+	ARN       string `json:"arn,omitempty" yaml:"-"`
+	Digest    string `json:"digest,omitempty" yaml:"-"`
+	Ref       string `json:"ref,omitempty" yaml:"-"`
+	DigestRef string `json:"digestRef,omitempty" yaml:"-"`
+
+	// Signature is the registry's base64 Ed25519 signature over Digest, and
+	// SignedBy is the signing key's id. Both are attached at the read boundary
+	// (server-side attestation) and never accepted on ingest.
+	Signature string `json:"signature,omitempty" yaml:"-"`
+	SignedBy  string `json:"signedBy,omitempty" yaml:"-"`
 }
 
 // Object is the universal envelope. spec/status are kept as free-form maps so a
@@ -127,6 +144,15 @@ const DefaultTag = "latest"
 func (o Object) Normalized() Object {
 	out := o
 	out.APIVersion = GroupVersion // we always store our canonical group
+
+	// Derived identity fields are server-computed on read — never trust them
+	// from a publisher (prevents spoofed ARNs/digests).
+	out.Metadata.ARN = ""
+	out.Metadata.Digest = ""
+	out.Metadata.Ref = ""
+	out.Metadata.DigestRef = ""
+	out.Metadata.Signature = ""
+	out.Metadata.SignedBy = ""
 
 	if out.Metadata.Namespace == "" {
 		out.Metadata.Namespace = DefaultNamespace

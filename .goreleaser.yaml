@@ -1,0 +1,63 @@
+# GoReleaser config for the `agentic` CLI. Builds multi-OS/arch static binaries
+# on a `v*` tag and publishes a Homebrew formula to the tesserix tap.
+#   Local dry run:  goreleaser release --snapshot --clean
+version: 2
+
+project_name: agentic
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: agentic
+    main: ./cmd/agentic
+    binary: agentic
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.Version={{ .Version }}
+
+archives:
+  - id: agentic
+    formats: [tar.gz]
+    name_template: "agentic_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]
+
+homebrew_casks:
+  - name: agentic
+    binaries: [agentic]
+    repository:
+      owner: tesserix
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/tesserix/agentic-registry"
+    description: "CLI for the Agentic Registry — publish, version, search, sign-verify, and render AI artifacts."
+    commit_msg_template: "brew cask: agentic {{ .Tag }}"
+    # Unsigned local-build binary: strip the macOS quarantine flag on install.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/agentic"]
+          end
+
+release:
+  github:
+    owner: tesserix
+    name: agentic-registry
+  name_template: "agentic CLI {{ .Tag }}"

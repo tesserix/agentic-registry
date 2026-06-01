@@ -1,12 +1,15 @@
 @import "tailwindcss";
 
 /* ===========================================================================
- * Agentic Registry — Design System
+ * Agentic Registry — Design System  ("Paper · Ink · Slate")
  *
- * Tokens adopted verbatim from the DevAI Mission Control "Paper · Ink · Slate"
- * system so the registry reads as a visual sibling of devai. Editorial-control
- * -room direction: warm-neutral paper canvas, near-black ink, calm slate
- * accent. Two themes flip every surface via the `.dark` class on <html>.
+ * One theme, two palettes. Every surface, border, and shadow is a CSS variable
+ * flipped by the `.dark` class on <html>, so light and dark stay in perfect
+ * lockstep — there is no second stylesheet to drift.
+ *
+ * Direction: a calm, editorial control-room. Warm-neutral paper in light,
+ * near-black ink in dark, a quiet slate accent, and soft layered elevation so
+ * cards read as distinct, liftable objects rather than flat rectangles.
  * =========================================================================== */
 
 @theme {
@@ -16,84 +19,94 @@
   --font-display: "Syne", "Inter", system-ui, sans-serif;
 }
 
+/* ---- Light (default) ------------------------------------------------------ */
 :root {
   color-scheme: light;
-  --canvas: #e9eaee;
-  --surface: #f6f6f8;
-  --surface-muted: #eeeff2;
-  --surface-hover: #e3e4e8;
-  --surface-raised: #f9f9fb;
-  --border-subtle: #dcdee2;
-  --border: #c5c7cc;
-  --border-strong: #a6a9af;
-  --border-focus: rgba(67, 72, 84, 0.45);
-  --ink-strong: #0e0e0c;
-  --ink: #2b2a27;
-  --ink-soft: #5c5953;
-  --ink-muted: #7a766e;
-  --ink-inverse: #fdfcf8;
-  --primary: #0e0e0c;
-  --primary-hover: #1c1b19;
-  --primary-ink: #fdfcf8;
-  --accent: #475569;
-  --accent-soft-bg: rgba(71, 85, 105, 0.08);
-  --accent-soft-bg-2: rgba(71, 85, 105, 0.14);
-  --accent-soft-bd: rgba(71, 85, 105, 0.2);
-  --accent-soft-ink: #1e293b;
-  --ok: #2d4a2b;
-  --ok-soft-bg: rgba(45, 74, 43, 0.08);
-  --ok-soft-bd: rgba(45, 74, 43, 0.25);
-  --ok-ink: #1c2f1a;
-  --warn: #b5751f;
-  --warn-soft-bg: rgba(181, 117, 31, 0.1);
-  --warn-soft-bd: rgba(181, 117, 31, 0.28);
-  --warn-ink: #7a4f0f;
-  --error: #8b2e20;
-  --error-soft-bg: rgba(139, 46, 32, 0.08);
-  --error-soft-bd: rgba(139, 46, 32, 0.28);
-  --error-ink: #6a1d12;
-  --shadow-card: 0 1px 2px rgba(14, 14, 12, 0.04), 0 1px 1px rgba(14, 14, 12, 0.03);
-  --shadow-raised: 0 12px 32px rgba(14, 14, 12, 0.08), 0 2px 6px rgba(14, 14, 12, 0.04);
+
+  --canvas: #eceef1;          /* app background — the desk */
+  --surface: #ffffff;         /* cards / panels — the paper */
+  --surface-muted: #f1f2f5;   /* code blocks, inset wells */
+  --surface-hover: #f6f7f9;
+  --surface-raised: #ffffff;  /* popovers, command palette */
+  --sidebar: #f7f8fa;
+
+  --border-subtle: #e7e8ec;
+  --border: #d9dbe0;
+  --border-strong: #b9bcc4;
+  --border-focus: rgba(71, 85, 105, 0.5);
+
+  --ink-strong: #14151a;
+  --ink: #34363d;
+  --ink-soft: #5f626c;
+  --ink-muted: #8b8e98;
+  --ink-inverse: #fbfbfd;
+
+  --primary: #16171c;
+  --primary-hover: #2a2c33;
+  --primary-ink: #fbfbfd;
+
+  --accent: #4f617d;
+  --accent-strong: #3b4a63;
+  --accent-soft-bg: rgba(79, 97, 125, 0.07);
+  --accent-soft-bg-2: rgba(79, 97, 125, 0.13);
+  --accent-soft-bd: rgba(79, 97, 125, 0.22);
+  --accent-soft-ink: #364257;
+
+  --ok: #2f6b3a;   --ok-soft-bg: rgba(47, 107, 58, 0.09);  --ok-soft-bd: rgba(47, 107, 58, 0.24);  --ok-ink: #245530;
+  --warn: #9a6213; --warn-soft-bg: rgba(154, 98, 19, 0.1);  --warn-soft-bd: rgba(154, 98, 19, 0.26); --warn-ink: #7a4f0f;
+  --error: #a3331f;--error-soft-bg: rgba(163, 51, 31, 0.08);--error-soft-bd: rgba(163, 51, 31, 0.26);--error-ink: #7e2718;
+
+  /* Layered, soft elevation — the key to card isolation. */
+  --shadow-sm: 0 1px 2px rgba(16, 18, 24, 0.05), 0 1px 1px rgba(16, 18, 24, 0.03);
+  --shadow-card: 0 1px 2px rgba(16, 18, 24, 0.04), 0 4px 12px -4px rgba(16, 18, 24, 0.08);
+  --shadow-card-hover: 0 2px 4px rgba(16, 18, 24, 0.05), 0 14px 30px -10px rgba(16, 18, 24, 0.16);
+  --shadow-raised: 0 20px 50px -12px rgba(16, 18, 24, 0.22), 0 6px 16px -8px rgba(16, 18, 24, 0.12);
+  --ring-focus: 0 0 0 3px var(--accent-soft-bg-2);
 }
 
+/* ---- Dark ----------------------------------------------------------------- */
 .dark {
   color-scheme: dark;
-  --canvas: #09090b;
-  --surface: #18181b;
-  --surface-muted: #1f1f23;
-  --surface-hover: #27272a;
-  --surface-raised: #1c1c20;
-  --border-subtle: #27272a;
-  --border: #2e2e33;
-  --border-strong: #3f3f46;
-  --border-focus: rgba(148, 163, 184, 0.4);
-  --ink-strong: #fafaf9;
-  --ink: #e7e5e4;
-  --ink-soft: #b7b3ad;
-  --ink-muted: #837f78;
-  --ink-inverse: #0a0a0a;
-  --primary: #fafaf9;
-  --primary-hover: #e7e5e4;
+
+  /* Soft graphite — a balanced gray dark (not black, not bright). */
+  --canvas: #1a1b1f;
+  --surface: #242529;         /* cards sit clearly above the canvas */
+  --surface-muted: #2a2b30;
+  --surface-hover: #2f3036;
+  --surface-raised: #26272c;
+  --sidebar: #1d1e22;
+
+  --border-subtle: #313238;
+  --border: #3c3d45;
+  --border-strong: #50515b;
+  --border-focus: rgba(148, 163, 184, 0.5);
+
+  --ink-strong: #f3f3f1;
+  --ink: #d6d5d1;
+  --ink-soft: #a6a49f;
+  --ink-muted: #7e7c76;
+  --ink-inverse: #1a1b1f;
+
+  --primary: #f5f5f4;
+  --primary-hover: #e1e0dd;
   --primary-ink: #0a0a0a;
-  --accent: #94a3b8;
-  --accent-soft-bg: rgba(148, 163, 184, 0.08);
-  --accent-soft-bg-2: rgba(148, 163, 184, 0.14);
-  --accent-soft-bd: rgba(148, 163, 184, 0.22);
-  --accent-soft-ink: #cbd5e1;
-  --ok: #84cc16;
-  --ok-soft-bg: rgba(132, 204, 22, 0.1);
-  --ok-soft-bd: rgba(132, 204, 22, 0.25);
-  --ok-ink: #bef264;
-  --warn: #d97706;
-  --warn-soft-bg: rgba(217, 119, 6, 0.1);
-  --warn-soft-bd: rgba(217, 119, 6, 0.25);
-  --warn-ink: #fbbf24;
-  --error: #dc2626;
-  --error-soft-bg: rgba(220, 38, 38, 0.1);
-  --error-soft-bd: rgba(220, 38, 38, 0.25);
-  --error-ink: #fca5a5;
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-raised: 0 24px 60px rgba(0, 0, 0, 0.6), 0 6px 18px rgba(0, 0, 0, 0.4);
+
+  --accent: #8ea2bd;
+  --accent-strong: #aab9d0;
+  --accent-soft-bg: rgba(142, 162, 189, 0.1);
+  --accent-soft-bg-2: rgba(142, 162, 189, 0.18);
+  --accent-soft-bd: rgba(142, 162, 189, 0.26);
+  --accent-soft-ink: #c3cfe0;
+
+  --ok: #7fd14f;   --ok-soft-bg: rgba(127, 209, 79, 0.12);  --ok-soft-bd: rgba(127, 209, 79, 0.26);  --ok-ink: #b6ef7e;
+  --warn: #e0962f; --warn-soft-bg: rgba(224, 150, 47, 0.13); --warn-soft-bd: rgba(224, 150, 47, 0.28); --warn-ink: #f3bd6b;
+  --error: #ef5a45;--error-soft-bg: rgba(239, 90, 69, 0.13);--error-soft-bd: rgba(239, 90, 69, 0.3);  --error-ink: #ff9d8c;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.28), 0 6px 16px -6px rgba(0, 0, 0, 0.36);
+  --shadow-card-hover: 0 2px 6px rgba(0, 0, 0, 0.34), 0 16px 34px -12px rgba(0, 0, 0, 0.46);
+  --shadow-raised: 0 24px 56px -16px rgba(0, 0, 0, 0.5), 0 8px 20px -10px rgba(0, 0, 0, 0.4);
+  --ring-focus: 0 0 0 3px var(--accent-soft-bg-2);
 }
 
 html {
@@ -105,78 +118,104 @@ body {
   background: var(--canvas);
   color: var(--ink);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
 }
-h1, h2, h3, h4 { color: var(--ink-strong); }
+h1, h2, h3, h4 { color: var(--ink-strong); letter-spacing: -0.018em; }
+::selection { background: var(--accent-soft-bg-2); }
+
+/* Smooth, theme-aware scrollbars so dark mode doesn't get a bright track. */
+* { scrollbar-color: var(--border-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-muted); }
 
 .font-mono { font-family: var(--font-mono); }
-.font-display { font-family: var(--font-display); letter-spacing: 0.02em; }
+.font-display { font-family: var(--font-display); letter-spacing: 0.01em; }
 .font-serif { font-family: var(--font-serif); }
 
 .label-eyebrow {
   font-family: var(--font-display);
   text-transform: uppercase;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.2em;
   font-size: 10px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--ink-muted);
 }
 
+/* ---- Surfaces ------------------------------------------------------------- */
 .panel {
   background: var(--surface);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: 12px;
 }
 .panel-raised {
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 14px;
   box-shadow: var(--shadow-raised);
 }
-.panel-hover:hover {
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-card);
-}
 
+/* The card: an isolated, liftable object. Soft shadow at rest, a gentle rise
+ * on hover. Used across the catalog grid. */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
+  transition: transform 160ms cubic-bezier(0.2, 0.6, 0.2, 1),
+    box-shadow 160ms ease, border-color 160ms ease;
+}
+.card-link:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+  border-color: var(--border);
+}
+.card-link:active { transform: translateY(0); }
+
+/* ---- Forms ---------------------------------------------------------------- */
 .field {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 10px;
   color: var(--ink);
   font-size: 14px;
-  padding: 7px 11px;
+  padding: 10px 13px;
   width: 100%;
-  transition: border-color 120ms, box-shadow 120ms;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 130ms, box-shadow 130ms;
 }
 .field::placeholder { color: var(--ink-muted); }
 .field:focus {
   outline: none;
-  border-color: var(--ink-strong);
-  box-shadow: 0 0 0 3px var(--accent-soft-bg-2);
+  border-color: var(--border-focus);
+  box-shadow: var(--ring-focus);
 }
 
+/* ---- Buttons -------------------------------------------------------------- */
 .btn-primary, .btn-secondary, .btn-ghost {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  border-radius: 6px;
+  gap: 7px;
+  border-radius: 9px;
   font-size: 13px;
-  font-weight: 500;
-  padding: 7px 14px;
+  font-weight: 550;
+  padding: 8px 15px;
   cursor: pointer;
   border: 1px solid transparent;
   white-space: nowrap;
-  transition: background 120ms, border-color 120ms, color 120ms;
+  transition: background 130ms, border-color 130ms, color 130ms, transform 130ms;
 }
+.btn-primary:active, .btn-secondary:active, .btn-ghost:active { transform: scale(0.98); }
 .btn-primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
 .btn-primary:hover { background: var(--primary-hover); }
-.btn-secondary { background: var(--surface); color: var(--ink); border-color: var(--border); }
+.btn-secondary { background: var(--surface); color: var(--ink); border-color: var(--border); box-shadow: var(--shadow-sm); }
 .btn-secondary:hover { background: var(--surface-hover); border-color: var(--border-strong); }
 .btn-ghost { background: transparent; color: var(--ink-soft); }
 .btn-ghost:hover { background: var(--surface-hover); color: var(--ink); }
 
-/* Chips & badges */
+/* ---- Chips & badges ------------------------------------------------------- */
 .chip {
   display: inline-flex;
   align-items: center;
@@ -189,7 +228,184 @@ h1, h2, h3, h4 { color: var(--ink-strong); }
   border: 1px solid var(--border-subtle);
   color: var(--ink-soft);
 }
-.badge-public { background: var(--ok-soft-bg); border-color: var(--ok-soft-bd); color: var(--ok-ink); }
-.badge-internal { background: var(--warn-soft-bg); border-color: var(--warn-soft-bd); color: var(--warn-ink); }
-.badge-private { background: var(--accent-soft-bg); border-color: var(--accent-soft-bd); color: var(--accent-soft-ink); }
-.badge-verified { background: var(--accent-soft-bg-2); border-color: var(--accent-soft-bd); color: var(--accent-soft-ink); }
+.badge-public   { background: var(--ok-soft-bg);    border-color: var(--ok-soft-bd);    color: var(--ok-ink); }
+.badge-internal { background: var(--warn-soft-bg);  border-color: var(--warn-soft-bd);  color: var(--warn-ink); }
+.badge-private  { background: var(--accent-soft-bg);border-color: var(--accent-soft-bd);color: var(--accent-soft-ink); }
+.badge-verified { background: var(--accent-soft-bg-2);border-color: var(--accent-soft-bd);color: var(--accent-soft-ink); }
+
+/* ---- Nav ------------------------------------------------------------------ */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  transition: background 120ms, color 120ms;
+}
+.nav-item:hover { background: var(--surface-hover); color: var(--ink); }
+.nav-item.active {
+  background: var(--accent-soft-bg);
+  color: var(--ink-strong);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--accent-soft-bd);
+}
+
+/* A keyboard-key cap, used in the ⌘K affordance and palette hints. */
+.kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 5px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  color: var(--ink-soft);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* ---- Command palette ------------------------------------------------------ */
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(10, 11, 14, 0.45);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+  animation: fade-in 120ms ease;
+}
+.palette {
+  width: 100%;
+  max-width: 640px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-raised);
+  overflow: hidden;
+  animation: pop-in 140ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-radius: 10px;
+}
+.palette-row[data-active="true"] { background: var(--accent-soft-bg-2); }
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-6px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.7s linear infinite; }
+
+/* ===========================================================================
+ * Flow canvas — a distinct, indigo-accented surface for Workflow / Blueprint
+ * graphs. Its own palette so it reads as a separate "design board", and it
+ * overrides React Flow's CSS variables for both light and dark.
+ * =========================================================================== */
+:root {
+  --flow-accent: #6366f1;
+  --flow-surface: #fbfaff;
+  --flow-dot: #d6d8e8;
+  --flow-edge: #a9adc9;
+  --flow-panel: rgba(255, 255, 255, 0.82);
+}
+.dark {
+  --flow-accent: #8b93f8;
+  --flow-surface: #1e1f24;
+  --flow-dot: #34353d;
+  --flow-edge: #565867;
+  --flow-panel: rgba(36, 37, 42, 0.85);
+}
+.flow-theme {
+  --xy-background-color: var(--flow-surface);
+  --xy-edge-stroke: var(--flow-edge);
+  --xy-edge-stroke-selected: var(--flow-accent);
+  --xy-edge-stroke-width: 1.5;
+  --xy-attribution-background-color: transparent;
+}
+.flow-theme .react-flow__edge-path { stroke-linecap: round; }
+.flow-theme .react-flow__edge.selected .react-flow__edge-path { stroke: var(--flow-accent); }
+.flow-theme .react-flow__edge-text { fill: var(--ink-soft); font-family: var(--font-mono); font-size: 10px; }
+.flow-theme .react-flow__edge-textbg { fill: var(--flow-surface); }
+.flow-theme .react-flow__controls-button {
+  background: var(--surface); border-bottom-color: var(--border-subtle); color: var(--ink);
+}
+.flow-theme .react-flow__controls-button:hover { background: var(--surface-hover); }
+.flow-theme .react-flow__minimap { background: var(--surface-muted); border-radius: 8px; }
+
+/* Node */
+.flow-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 130px;
+  padding: 9px 13px;
+  border-radius: 11px;
+  border: 1.5px solid;
+  box-shadow: var(--shadow-card);
+  font-size: 12.5px;
+  color: var(--ink-strong);
+  backdrop-filter: blur(2px);
+  transition: box-shadow 140ms, transform 140ms;
+}
+.flow-node[data-selected="true"] { box-shadow: 0 0 0 2px var(--flow-accent), var(--shadow-card-hover); }
+.flow-node-dot { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
+.flow-node-label { font-weight: 600; white-space: nowrap; }
+.flow-node-kind { font-family: var(--font-mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; margin-left: auto; opacity: 0.9; }
+.flow-theme .react-flow__handle { width: 8px; height: 8px; background: var(--flow-accent); border: 2px solid var(--flow-surface); }
+
+/* Overlay panels (toolbar + inspector) */
+.flow-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: 11px;
+  background: var(--flow-panel); border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card); backdrop-filter: blur(8px);
+}
+.flow-toolbar-title { font-family: var(--font-display); font-size: 12px; font-weight: 600; color: var(--ink-strong); margin-right: 4px; }
+.flow-inspector {
+  width: 220px; padding: 13px; border-radius: 12px;
+  background: var(--flow-panel); border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-raised); backdrop-filter: blur(8px);
+}
+.flow-field-label { display: block; font-size: 11px; color: var(--ink-muted); margin-bottom: 4px; }
+.flow-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 550; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink); cursor: pointer;
+  transition: background 120ms, border-color 120ms, opacity 120ms;
+}
+.flow-btn:hover { background: var(--surface-hover); }
+.flow-btn:disabled { opacity: 0.5; cursor: default; }
+.flow-btn-primary { background: var(--flow-accent); border-color: var(--flow-accent); color: #fff; }
+.flow-btn-primary:hover { filter: brightness(1.07); background: var(--flow-accent); }
+.flow-btn-danger { color: var(--error-ink); border-color: var(--error-soft-bd); background: var(--error-soft-bg); }
+.flow-empty {
+  font-size: 12px; color: var(--ink-soft); background: var(--flow-panel);
+  border: 1px dashed var(--border); border-radius: 10px; padding: 8px 14px; backdrop-filter: blur(6px);
+}
+.flow-error { margin-top: 6px; font-size: 11px; color: var(--error-ink); font-family: var(--font-mono); }
+
+/* Legend */
+.flow-legend {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--flow-panel); border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card); backdrop-filter: blur(8px);
+  font-size: 11px; color: var(--ink-soft);
+}
+.flow-legend-item { display: inline-flex; align-items: center; gap: 5px; text-transform: capitalize; }
+.flow-legend-dot { width: 8px; height: 8px; border-radius: 999px; }
+.flow-legend-sep { width: 1px; height: 14px; background: var(--border); }
+.flow-legend-line { width: 18px; height: 0; border-top: 2px solid var(--flow-accent); border-radius: 2px; }
+.flow-legend-line.dotted { border-top-style: dashed; }
+/* Bigger, friendlier connection handles. */
+.flow-theme .react-flow__handle { width: 9px; height: 9px; background: var(--flow-accent); border: 2px solid var(--flow-surface); opacity: 0.55; transition: opacity 120ms, transform 120ms; }
+.flow-theme .react-flow__node:hover .react-flow__handle { opacity: 1; }
+.flow-theme .react-flow__handle:hover { opacity: 1; transform: scale(1.35); }

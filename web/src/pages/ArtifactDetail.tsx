@@ -1,37 +1,59 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, lazy, Suspense } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Loader2, Tag, ShieldCheck, Copy, Check } from "lucide-react";
-import { api, KINDS, type Artifact, visibilityClass, userLabels } from "../lib/api";
+import { ArrowLeft, Loader2, Tag, ShieldCheck, ShieldAlert, Copy, Check, Fingerprint, Pencil, History } from "lucide-react";
+import { api, KINDS, type Artifact, type Revision, visibilityClass, userLabels } from "../lib/api";
+import { verifyEd25519 } from "../lib/verify";
+import ArtifactEditor from "../components/ArtifactEditor";
+// React Flow is heavy — load it only when viewing a Workflow/Blueprint.
+const FlowCanvas = lazy(() => import("../components/FlowCanvas"));
+
+interface Version {
+  tag: string;
+  digest?: string;
+  updatedAt?: string;
+}
 
 export default function ArtifactDetail() {
   const { plural = "skills", name = "" } = useParams();
   const meta = KINDS.find((k) => k.plural === plural) ?? KINDS[0];
 
   const [a, setA] = useState<Artifact | null>(null);
-  const [tags, setTags] = useState<string[]>([]);
+  const [versions, setVersions] = useState<Version[]>([]);
+  const [revisions, setRevisions] = useState<Revision[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     setError(null);
     setA(null);
+    setVersions([]);
     api.get(plural, name).then(setA).catch((e) => setError(String(e.message ?? e)));
-    api.tags(plural, name).then((t) => setTags(t.tags)).catch(() => setTags([]));
-  }, [plural, name]);
-
-  const installCmd = `agentic pull ${meta.kind.toLowerCase()} ${name}`;
-
-  function copy() {
-    navigator.clipboard.writeText(installCmd);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
+    // Versions table with per-version fingerprints.
+    api
+      .tags(plural, name)
+      .then(async (t) => {
+        const rows = await Promise.all(
+          t.tags.map(async (tag) => {
+            try {
+              const o = await api.getVersion(plural, name, tag);
+              return { tag, digest: o.metadata.digest, updatedAt: o.metadata.updatedAt };
+            } catch {
+              return { tag };
+            }
+          }),
+        );
+        setVersions(rows);
+      })
+      .catch(() => setVersions([]));
+    api.revisions(plural, name).then(setRevisions).catch(() => setRevisions([]));
+  }, [plural, name, reload]);
 
   if (error) {
     return (
-      <div className="p-7 max-w-4xl mx-auto">
+      <div className="px-8 py-9 max-w-5xl mx-auto">
         <Back plural={plural} label={meta.label} />
-        <div className="panel p-6 mt-4 text-[13px]" style={{ color: "var(--error-ink)" }}>
+        <div className="card p-6 mt-4 text-[13px]" style={{ color: "var(--error-ink)" }}>
           {error}
         </div>
       </div>
@@ -40,37 +62,52 @@ export default function ArtifactDetail() {
   if (!a) {
     return (
       <div className="p-7 flex items-center gap-2 justify-center mt-20" style={{ color: "var(--ink-muted)" }}>
-        <Loader2 className="w-4 h-4 animate-spin" /> loading…
+        <Loader2 className="w-4 h-4 spin" /> loading…
       </div>
     );
   }
 
-  const title = (a.spec?.title as string) || a.metadata.name;
+  const m = a.metadata;
+  const title = (a.spec?.title as string) || m.name;
   const desc = (a.spec?.description as string) || "";
-  const labels = userLabels(a.metadata.labels);
-  const verified = a.metadata.name.includes("/");
+  const labels = userLabels(m.labels);
+  const verified = m.name.includes("/");
+  const shortDigest = m.digest ? m.digest.replace(/^sha256:/, "").slice(0, 12) : "";
+  const pullCmd = `agentic pull ${m.ref ?? `${plural}/${m.namespace}/${m.name}@${m.tag ?? "latest"}`}`;
 
   return (
-    <div className="p-7 max-w-4xl mx-auto">
+    <div className="px-8 py-9 max-w-5xl mx-auto">
       <Back plural={plural} label={meta.label} />
 
       <div className="flex items-start justify-between gap-4 mt-4">
-        <div>
+        <div className="min-w-0">
           <div className="label-eyebrow">{meta.kind}</div>
-          <h1 className="font-serif text-3xl font-medium mt-1" style={{ color: "var(--ink-strong)" }}>
+          <h1 className="font-serif text-3xl font-semibold mt-1" style={{ color: "var(--ink-strong)" }}>
             {title}
           </h1>
-          <div className="font-mono text-[12px] mt-1" style={{ color: "var(--ink-muted)" }}>
-            {a.metadata.name}
+          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+            <span className="font-mono text-[12px]" style={{ color: "var(--ink-muted)" }}>
+              {m.name}
+            </span>
+            <span className="chip font-mono">{m.tag ?? "latest"}</span>
+            <span className="chip badge-verified">latest</span>
+            {shortDigest && (
+              <span className="chip badge-verified font-mono" title={m.digest}>
+                <Fingerprint className="w-3 h-3" /> {shortDigest}
+              </span>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className={`chip ${visibilityClass(a.metadata.visibility)}`}>{a.metadata.visibility}</span>
+        <div className="flex items-center gap-2 shrink-0">
           {verified && (
             <span className="chip badge-verified">
               <ShieldCheck className="w-3 h-3" /> verified
             </span>
           )}
+          <span className={`chip ${visibilityClass(m.visibility)}`}>{m.visibility}</span>
+          <button className="btn-secondary" onClick={() => setEditOpen(true)}>
+            <Pencil className="w-3.5 h-3.5" /> Edit
+          </button>
         </div>
       </div>
 
@@ -80,37 +117,118 @@ export default function ArtifactDetail() {
         </p>
       )}
 
-      <div className="panel p-3 mt-5 flex items-center justify-between font-mono text-[13px]">
-        <span style={{ color: "var(--ink-soft)" }}>$ {installCmd}</span>
-        <button onClick={copy} className="btn-ghost" style={{ padding: "4px 8px" }}>
-          {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-        </button>
-      </div>
+      {/* Pull command */}
+      <CopyLine className="mt-5" value={pullCmd} prefix="$ " />
+
+      {/* Visual flow editor for Workflow / Blueprint kinds */}
+      {(meta.kind === "Workflow" || meta.kind === "Blueprint") && (
+        <div className="mt-6">
+          <Suspense fallback={<div className="card flex items-center justify-center" style={{ height: 480, color: "var(--ink-muted)" }}><Loader2 className="w-4 h-4 spin" /></div>}>
+            <FlowCanvas key={m.digest} artifact={a} plural={plural} kind={meta.kind} onSaved={() => setReload((n) => n + 1)} />
+          </Suspense>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-6">
-        <section className="lg:col-span-2 panel p-5">
-          <div className="label-eyebrow mb-3">Spec</div>
-          <pre
-            className="font-mono text-[12px] overflow-auto rounded-md p-3"
-            style={{ background: "var(--surface-muted)", color: "var(--ink-soft)", maxHeight: 420 }}
-          >
-            {JSON.stringify(a.spec ?? {}, null, 2)}
-          </pre>
-        </section>
-
-        <aside className="space-y-4">
-          <div className="panel p-5">
-            <div className="label-eyebrow mb-3">Versions</div>
-            <div className="space-y-1.5">
-              {(tags.length ? tags : [a.metadata.tag ?? "latest"]).map((t) => (
-                <div key={t} className="flex items-center gap-2 font-mono text-[12px]" style={{ color: "var(--ink-soft)" }}>
-                  <Tag className="w-3.5 h-3.5" /> {t}
-                </div>
-              ))}
+        <section className="lg:col-span-2 space-y-4">
+          {/* Identity & provenance — the artifact-repository surface */}
+          <div className="card p-5">
+            <div className="label-eyebrow mb-3">Identity &amp; provenance</div>
+            <div className="space-y-2.5">
+              <CopyField label="ARN" value={m.arn} />
+              <CopyField label="Digest" value={m.digest} />
+              <CopyField label="Reference" value={m.ref} />
+              <CopyField label="Digest reference" value={m.digestRef} />
+              <CopyField label="UID" value={m.uid} />
+              <SignaturePanel digest={m.digest} signature={m.signature} signedBy={m.signedBy} />
             </div>
           </div>
 
-          <div className="panel p-5">
+          {/* Spec */}
+          <div className="card p-5">
+            <div className="label-eyebrow mb-3">Spec</div>
+            <pre
+              className="font-mono text-[12px] overflow-auto rounded-md p-3"
+              style={{ background: "var(--surface-muted)", color: "var(--ink-soft)", maxHeight: 360 }}
+            >
+              {JSON.stringify(a.spec ?? {}, null, 2)}
+            </pre>
+          </div>
+
+          {/* Append-only audit timeline */}
+          <div className="card p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <History className="w-4 h-4" style={{ color: "var(--ink-muted)" }} />
+              <span className="label-eyebrow">History</span>
+              <span className="font-mono text-[11px] ml-auto" style={{ color: "var(--ink-muted)" }}>
+                {revisions.length} revision{revisions.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            {revisions.length === 0 ? (
+              <p className="text-[12px]" style={{ color: "var(--ink-muted)" }}>No recorded revisions yet.</p>
+            ) : (
+              <ol className="relative">
+                {revisions.map((rev, i) => (
+                  <li key={`${rev.tag}-${rev.revision}`} className="flex gap-3 pb-4 last:pb-0">
+                    {/* timeline rail */}
+                    <div className="flex flex-col items-center shrink-0">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full mt-1"
+                        style={{ background: i === 0 ? "var(--accent)" : "var(--border-strong)" }}
+                      />
+                      {i < revisions.length - 1 && <span className="w-px flex-1 mt-1" style={{ background: "var(--border-subtle)" }} />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-[12px]" style={{ color: "var(--ink)" }}>
+                          {rev.tag}
+                        </span>
+                        <span className="chip" style={{ padding: "1px 6px" }}>rev {rev.revision}</span>
+                        {i === 0 && <span className="chip badge-public" style={{ padding: "1px 6px" }}>current</span>}
+                        <span className="font-mono text-[11px] ml-auto" style={{ color: "var(--ink-muted)" }}>
+                          {rev.createdAt?.slice(0, 19).replace("T", " ")}
+                        </span>
+                      </div>
+                      <div className="font-mono text-[10.5px] truncate mt-0.5" style={{ color: "var(--ink-muted)" }} title={rev.digest}>
+                        {rev.digest}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </section>
+
+        <aside className="space-y-4">
+          {/* Versions with fingerprints */}
+          <div className="card p-5">
+            <div className="label-eyebrow mb-3">Versions</div>
+            <div className="space-y-2">
+              {(versions.length ? versions : [{ tag: m.tag ?? "latest", digest: m.digest, updatedAt: m.updatedAt }]).map((v) => {
+                const current = v.tag === (m.tag ?? "latest");
+                return (
+                  <div key={v.tag} className="flex flex-col gap-0.5 pb-2 border-b last:border-0" style={{ borderColor: "var(--border-subtle)" }}>
+                    <div className="flex items-center gap-2 font-mono text-[12px]" style={{ color: "var(--ink)" }}>
+                      <Tag className="w-3.5 h-3.5" style={{ color: "var(--ink-muted)" }} /> {v.tag}
+                      {v.tag !== "latest" && (
+                        <span className="chip badge-public" style={{ padding: "1px 6px" }}>immutable</span>
+                      )}
+                      {current && <span className="chip" style={{ padding: "1px 6px" }}>current</span>}
+                    </div>
+                    {v.digest && (
+                      <span className="font-mono text-[10.5px] truncate" style={{ color: "var(--ink-muted)" }} title={v.digest}>
+                        {v.digest.slice(0, 23)}…
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Labels */}
+          <div className="card p-5">
             <div className="label-eyebrow mb-3">Labels</div>
             <div className="flex flex-wrap gap-1.5">
               {Object.entries(labels).length === 0 && (
@@ -126,15 +244,138 @@ export default function ArtifactDetail() {
             </div>
           </div>
 
-          <div className="panel p-5 text-[12px] space-y-1.5" style={{ color: "var(--ink-soft)" }}>
+          {/* Scope */}
+          <div className="card p-5 text-[12px] space-y-1.5" style={{ color: "var(--ink-soft)" }}>
             <div className="label-eyebrow mb-2">Scope</div>
-            <Row k="tenant" v={a.metadata.tenantId} />
-            {a.metadata.orgId && <Row k="org" v={a.metadata.orgId} />}
-            <Row k="namespace" v={a.metadata.namespace} />
-            <Row k="updated" v={a.metadata.updatedAt?.slice(0, 19).replace("T", " ")} />
+            <Row k="tenant" v={m.tenantId} />
+            {m.orgId && <Row k="org" v={m.orgId} />}
+            <Row k="namespace" v={m.namespace} />
+            <Row k="created" v={m.createdAt?.slice(0, 19).replace("T", " ")} />
+            <Row k="updated" v={m.updatedAt?.slice(0, 19).replace("T", " ")} />
           </div>
         </aside>
       </div>
+
+      <ArtifactEditor
+        kind={meta.kind}
+        plural={plural}
+        open={editOpen}
+        initial={{
+          apiVersion: a.apiVersion,
+          kind: a.kind,
+          metadata: {
+            name: m.name,
+            namespace: m.namespace,
+            // Blank so saving auto-increments to the next version (a released
+            // version is immutable). User can type one to pin.
+            tag: "",
+            visibility: m.visibility,
+            labels: userLabels(m.labels),
+          },
+          spec: a.spec ?? {},
+        }}
+        onClose={() => setEditOpen(false)}
+        onCreated={() => {
+          setEditOpen(false);
+          setReload((n) => n + 1);
+        }}
+      />
+    </div>
+  );
+}
+
+function SignaturePanel({ digest, signature, signedBy }: { digest?: string; signature?: string; signedBy?: string }) {
+  const [state, setState] = useState<"idle" | "verifying" | "ok" | "fail" | "error">("idle");
+  if (!signature) return null;
+
+  async function verify() {
+    setState("verifying");
+    try {
+      const key = await api.signingKey();
+      if (!key.enabled || !key.publicKey || !digest) {
+        setState("error");
+        return;
+      }
+      setState((await verifyEd25519(key.publicKey, signature!, digest)) ? "ok" : "fail");
+    } catch {
+      setState("error");
+    }
+  }
+
+  const icon =
+    state === "verifying" ? <Loader2 className="w-3.5 h-3.5 spin" /> :
+    state === "ok" ? <ShieldCheck className="w-3.5 h-3.5" style={{ color: "var(--ok)" }} /> :
+    state === "fail" || state === "error" ? <ShieldAlert className="w-3.5 h-3.5" style={{ color: "var(--error)" }} /> :
+    <ShieldCheck className="w-3.5 h-3.5" />;
+  const label = state === "ok" ? "Verified" : state === "fail" ? "Invalid" : state === "error" ? "Can’t verify" : "Verify";
+
+  return (
+    <div className="pt-1">
+      <div className="text-[11px] mb-0.5" style={{ color: "var(--ink-muted)" }}>
+        Signature (ed25519){signedBy && <span className="font-mono"> · key {signedBy}</span>}
+      </div>
+      <div className="flex items-center gap-2">
+        <div
+          className="flex-1 min-w-0 font-mono text-[11px] truncate rounded-md px-2.5 py-1.5"
+          style={{ background: "var(--surface-muted)", border: "1px solid var(--border-subtle)", color: "var(--ink-soft)" }}
+          title={signature}
+        >
+          {signature}
+        </div>
+        <button className="btn-secondary shrink-0" style={{ padding: "6px 10px" }} onClick={verify}>
+          {icon}
+          {label}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CopyField({ label, value }: { label: string; value?: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!value) return null;
+  return (
+    <div>
+      <div className="text-[11px] mb-0.5" style={{ color: "var(--ink-muted)" }}>
+        {label}
+      </div>
+      <button
+        onClick={() => {
+          navigator.clipboard.writeText(value);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        }}
+        className="w-full flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left"
+        style={{ background: "var(--surface-muted)", border: "1px solid var(--border-subtle)" }}
+      >
+        <span className="font-mono text-[12px] truncate flex-1" style={{ color: "var(--ink)" }}>
+          {value}
+        </span>
+        {copied ? <Check className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--ok)" }} /> : <Copy className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--ink-muted)" }} />}
+      </button>
+    </div>
+  );
+}
+
+function CopyLine({ value, prefix = "", className = "" }: { value: string; prefix?: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className={`card p-3 flex items-center justify-between font-mono text-[13px] ${className}`}>
+      <span className="truncate" style={{ color: "var(--ink-soft)" }}>
+        {prefix}
+        {value}
+      </span>
+      <button
+        onClick={() => {
+          navigator.clipboard.writeText(value);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+        className="btn-ghost shrink-0"
+        style={{ padding: "4px 8px" }}
+      >
+        {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+      </button>
     </div>
   );
 }

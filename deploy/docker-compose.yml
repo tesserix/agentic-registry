@@ -30,6 +30,9 @@ services:
       DATABASE_URL: postgres://registry:registry@postgres:5432/registry?sslmode=disable
       AUTO_MIGRATE: "true"        # OSS self-host applies the embedded schema
       AUTH_MODE: anonymous        # local dev = full access; use jwks in prod
+      SIGNING_DEV: "true"         # ephemeral Ed25519 key so Agent Cards are
+                                  # signed; a verifying A2A consumer (secure by
+                                  # default) accepts them. Prod sets SIGNING_PRIVATE_KEY.
       WEB_DIR: /app/web
       PUBLIC_BASE_URL: http://localhost:8080
     ports:

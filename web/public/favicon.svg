@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Agentic Registry">
+  <rect width="32" height="32" rx="8" fill="#16171c"/>
+  <!-- Stacked layers: a registry of artifacts. Slate mark reads on light and dark tabs. -->
+  <path d="M16 6 L25 10.8 L16 15.6 L7 10.8 Z" fill="#8ea2bd" fill-opacity="0.18"/>
+  <g fill="none" stroke="#9db0ca" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M16 6 L25 10.8 L16 15.6 L7 10.8 Z"/>
+    <path d="M7 16 L16 20.8 L25 16"/>
+    <path d="M7 21.2 L16 26 L25 21.2"/>
+  </g>
+</svg>

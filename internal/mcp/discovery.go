@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/tesserix/agentic-registry/internal/a2a"
 	"github.com/tesserix/agentic-registry/internal/auth"
 	"github.com/tesserix/agentic-registry/internal/selector"
+	"github.com/tesserix/agentic-registry/internal/signing"
 	"github.com/tesserix/agentic-registry/internal/store"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
@@ -28,12 +30,15 @@ func parseSelectorArg(s string) selector.Selector {
 
 // DiscoveryServer answers MCP JSON-RPC requests against the registry store.
 type DiscoveryServer struct {
-	store store.Store
+	store  store.Store
+	signer *signing.Signer
 }
 
-// NewDiscoveryServer returns an http.Handler for the /mcp endpoint.
-func NewDiscoveryServer(st store.Store) http.Handler {
-	return &DiscoveryServer{store: st}
+// NewDiscoveryServer returns an http.Handler for the /mcp endpoint. signer may
+// be nil (or disabled): rendered Agent Cards then carry identity but no
+// attestation, exactly like the HTTP path when signing is off.
+func NewDiscoveryServer(st store.Store, signer *signing.Signer) http.Handler {
+	return &DiscoveryServer{store: st, signer: signer}
 }
 
 type rpcRequest struct {
@@ -133,6 +138,9 @@ func toolDefs() []map[string]interface{} {
 		)
 	}
 	tools = append(tools, tool("search_registry", "Keyword search across all artifact kinds.", searchSchema))
+	tools = append(tools, tool("get_agent_card",
+		"Render the A2A (Agent2Agent) Agent Card for an agent — its capabilities, "+
+			"service url, and skills — so a client can call it over A2A.", getSchema))
 	return tools
 }
 
@@ -187,6 +195,8 @@ func (d *DiscoveryServer) callTool(ctx context.Context, r *http.Request, params 
 			return nil, err
 		}
 		return toolResult(summaries(res.Items)), nil
+	case p.Name == "get_agent_card":
+		return d.agentCardTool(ctx, str, canRead)
 	default:
 		// list_<plural> / get_<singular>
 		return d.kindTool(ctx, p.Name, args, str, canRead)
@@ -224,6 +234,51 @@ func (d *DiscoveryServer) kindTool(ctx context.Context, name string, args map[st
 		}
 	}
 	return nil, store.ErrNotFound
+}
+
+// withIdentity attaches the derived identity (arn/digest/ref) and, when signing
+// is enabled, the registry's Ed25519 attestation over the digest — mirroring
+// the HTTP server's withIdentity so cards are consistent across both surfaces.
+func (d *DiscoveryServer) withIdentity(o v1alpha1.Object) v1alpha1.Object {
+	o = o.WithIdentity()
+	if d.signer.Enabled() {
+		o.Metadata.Signature = d.signer.Sign(o.Metadata.Digest)
+		o.Metadata.SignedBy = d.signer.KeyID()
+	}
+	return o
+}
+
+// agentCardTool renders the A2A Agent Card for an agent over MCP, resolving
+// skill references against the registry's Skill catalog in the same namespace
+// and honouring the caller's read visibility.
+func (d *DiscoveryServer) agentCardTool(ctx context.Context, str func(string) string, canRead func(v1alpha1.Object) bool) (interface{}, error) {
+	ns := str("namespace")
+	if ns == "" {
+		ns = v1alpha1.DefaultNamespace
+	}
+	agent, err := d.store.Get(ctx, v1alpha1.KindAgent, ns, str("name"), str("tag"))
+	if err != nil {
+		return nil, err
+	}
+	if !canRead(agent) {
+		return nil, store.ErrNotFound
+	}
+	// Stamp arn/digest/ref and, when signing is enabled, the registry's
+	// attestation over the digest — so a verifying consumer trusts a card
+	// fetched over MCP exactly as it would one fetched over HTTP.
+	agent = d.withIdentity(agent)
+	resolve := func(skillName string) (v1alpha1.Object, bool) {
+		sk, err := d.store.Get(ctx, v1alpha1.KindSkill, ns, skillName, "")
+		if err != nil || !canRead(sk) {
+			return v1alpha1.Object{}, false
+		}
+		return sk, true
+	}
+	card, err := a2a.Card(agent, resolve, a2a.Options{})
+	if err != nil {
+		return nil, err
+	}
+	return toolResult(card), nil
 }
 
 func summaries(items []v1alpha1.Object) []map[string]interface{} {

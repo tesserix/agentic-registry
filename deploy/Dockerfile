@@ -3,6 +3,9 @@
 # ---- build the web UI ------------------------------------------------------
 FROM ghcr.io/tesserix/base-node-builder-22:latest AS web
 USER 0:0
+# CI=true lets pnpm reconcile/purge node_modules non-interactively (no TTY in
+# the build), e.g. when the lockfile changed since a cached install layer.
+ENV CI=true
 WORKDIR /web
 RUN corepack enable
 COPY web/package.json web/pnpm-lock.yaml* web/pnpm-workspace.yaml* ./

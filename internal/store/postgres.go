@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/tesserix/agentic-registry/internal/embed"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
 
@@ -50,12 +54,68 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_labels    ON registry.artifacts USING g
 CREATE INDEX IF NOT EXISTS idx_artifacts_kind_ns   ON registry.artifacts (kind, namespace);
 CREATE INDEX IF NOT EXISTS idx_artifacts_updated   ON registry.artifacts (updated_at);
 CREATE INDEX IF NOT EXISTS idx_artifacts_tenant    ON registry.artifacts (tenant_id);
+
+-- Append-only audit timeline. One immutable row per content change (including
+-- overwrites of the floating "latest" tag), so history survives mutation.
+CREATE TABLE IF NOT EXISTS registry.artifact_revisions (
+    kind         text        NOT NULL,
+    namespace    text        NOT NULL,
+    name         text        NOT NULL,
+    tag          text        NOT NULL,
+    revision     bigint      NOT NULL,
+    uid          uuid        NOT NULL,
+    api_version  text        NOT NULL,
+    visibility   text        NOT NULL,
+    tenant_id    text        NOT NULL,
+    org_id       text,
+    team_id      text,
+    content_hash char(64)    NOT NULL,
+    labels       jsonb       NOT NULL DEFAULT '{}',
+    annotations  jsonb       NOT NULL DEFAULT '{}',
+    spec         jsonb       NOT NULL DEFAULT '{}',
+    status       jsonb       NOT NULL DEFAULT '{}',
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, namespace, name, tag, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_revisions_artifact ON registry.artifact_revisions (kind, namespace, name, created_at DESC);
 `
+
+// backfillRevisionsSQL seeds revision 1 from the current artifacts for any row
+// that has no history yet (rows written before the timeline existed). Idempotent.
+const backfillRevisionsSQL = `
+INSERT INTO registry.artifact_revisions
+    (kind, namespace, name, tag, revision, uid, api_version, visibility, tenant_id, org_id, team_id,
+     content_hash, labels, annotations, spec, status, created_at)
+SELECT a.kind, a.namespace, a.name, a.tag, 1, a.uid, a.api_version, a.visibility, a.tenant_id, a.org_id, a.team_id,
+       a.content_hash, a.labels, a.annotations, a.spec, a.status, a.created_at
+FROM registry.artifacts a
+WHERE NOT EXISTS (
+    SELECT 1 FROM registry.artifact_revisions r
+    WHERE r.kind=a.kind AND r.namespace=a.namespace AND r.name=a.name AND r.tag=a.tag
+);`
+
+// vectorDDL adds the pgvector column + HNSW cosine index. Kept separate from
+// schemaSQL because pgvector is optional: if the extension isn't installed the
+// store falls back to substring search instead of failing to start. %d is the
+// embedding dimensionality so the column width always matches the embedder.
+var vectorDDL = fmt.Sprintf(`
+CREATE EXTENSION IF NOT EXISTS vector;
+ALTER TABLE registry.artifacts ADD COLUMN IF NOT EXISTS embedding vector(%d);
+CREATE INDEX IF NOT EXISTS idx_artifacts_embedding
+    ON registry.artifacts USING hnsw (embedding vector_cosine_ops);
+`, embed.Dim)
 
 // Postgres is the production Store backed by PostgreSQL. spec/status/labels are
 // JSONB; identity and scope are promoted to real columns and GIN-indexed.
 type Postgres struct {
 	pool *pgxpool.Pool
+	// vectorEnabled is true when the embedding column exists, enabling
+	// pgvector cosine-ranked search. Detected at startup; false => substring.
+	vectorEnabled bool
+	// immutableTags rejects content changes to an already-published version tag.
+	immutableTags bool
+	// autoVersion assigns the next semver when a publish omits a version.
+	autoVersion bool
 }
 
 // NewPostgres connects to dsn, optionally applies the embedded schema, and
@@ -65,30 +125,207 @@ func NewPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 	if err != nil {
 		return nil, fmt.Errorf("postgres: connect: %w", err)
 	}
+	p := &Postgres{pool: pool}
+
 	if os.Getenv("AUTO_MIGRATE") != "false" {
 		if _, err := pool.Exec(ctx, schemaSQL); err != nil {
 			pool.Close()
 			return nil, fmt.Errorf("postgres: migrate: %w", err)
 		}
+		// Seed an initial revision for any pre-existing artifact (idempotent).
+		if _, err := pool.Exec(ctx, backfillRevisionsSQL); err != nil {
+			log.Printf("agentic-registry: revision backfill: %v", err)
+		}
+		// Best-effort: enable pgvector. A failure here (extension not bundled)
+		// is non-fatal — the registry still serves substring search.
+		if os.Getenv("VECTOR_SEARCH") != "false" {
+			if _, err := pool.Exec(ctx, vectorDDL); err != nil {
+				log.Printf("agentic-registry: pgvector unavailable, using substring search: %v", err)
+			}
+		}
 	}
-	return &Postgres{pool: pool}, nil
+
+	// Detect the column regardless of who created it (the binary in OSS mode,
+	// or the tesserix-k8s db-schema-bootstrap job in production).
+	if os.Getenv("VECTOR_SEARCH") != "false" {
+		p.vectorEnabled = p.hasEmbeddingColumn(ctx)
+		if p.vectorEnabled {
+			if n, err := p.backfillEmbeddings(ctx); err != nil {
+				log.Printf("agentic-registry: embedding backfill: %v", err)
+			} else if n > 0 {
+				log.Printf("agentic-registry: backfilled %d embedding(s)", n)
+			}
+		}
+	}
+	return p, nil
+}
+
+func (p *Postgres) hasEmbeddingColumn(ctx context.Context) bool {
+	var ok bool
+	err := p.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema='registry' AND table_name='artifacts' AND column_name='embedding')`).Scan(&ok)
+	return err == nil && ok
+}
+
+// backfillEmbeddings computes embeddings for any rows missing one (e.g. rows
+// written before the column existed). Cheap for a registry-sized table.
+func (p *Postgres) backfillEmbeddings(ctx context.Context) (int, error) {
+	rows, err := p.pool.Query(ctx, "SELECT "+cols+" FROM registry.artifacts WHERE embedding IS NULL")
+	if err != nil {
+		return 0, err
+	}
+	objs, err := scanRows(rows)
+	if err != nil {
+		return 0, err
+	}
+	for _, o := range objs {
+		_, err := p.pool.Exec(ctx,
+			`UPDATE registry.artifacts SET embedding=$5::vector
+			 WHERE kind=$1 AND namespace=$2 AND name=$3 AND tag=$4`,
+			string(o.Kind), o.Metadata.Namespace, o.Metadata.Name, o.Metadata.Tag, vecLiteral(embed.Object(o)),
+		)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return len(objs), nil
+}
+
+// embeddingUpdate is the ON CONFLICT SET clause fragment that refreshes the
+// embedding on re-apply, or empty when vector search is disabled.
+func embeddingUpdate(enabled bool) string {
+	if enabled {
+		return "\n    embedding    = EXCLUDED.embedding,"
+	}
+	return ""
+}
+
+// vecLiteral formats a vector as the pgvector text literal "[v1,v2,...]" so it
+// can be bound as a parameter with a ::vector cast (no extra driver dependency).
+func vecLiteral(v []float32) string {
+	var b strings.Builder
+	b.Grow(len(v) * 8)
+	b.WriteByte('[')
+	for i, x := range v {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(float64(x), 'f', 6, 32))
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 func (p *Postgres) Apply(ctx context.Context, obj v1alpha1.Object) (v1alpha1.Object, bool, error) {
 	obj = obj.Normalized()
-	hash := obj.ContentHash()
-	labels, _ := json.Marshal(obj.Metadata.Labels)
-	annos, _ := json.Marshal(obj.Metadata.Annotations)
-	spec, _ := json.Marshal(orEmpty(obj.Spec))
 	status := map[string]interface{}{"status": "active"}
 	statusJSON, _ := json.Marshal(status)
 	uid := uuid.NewString()
 
-	const q = `
+	// Everything runs in one transaction: auto-versioning, the immutability
+	// check, the upsert, and the append-only revision are atomic.
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Namespace-scoped name uniqueness across all kinds. Serialize concurrent
+	// publishes targeting the same (namespace, name) with a transaction-scoped
+	// advisory lock so two different kinds can't both pass the guard and race
+	// in. The lock auto-releases on commit/rollback; it is keyed on the
+	// (namespace, name) pair, so unrelated publishes never contend.
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+		obj.Metadata.Namespace, obj.Metadata.Name,
+	); err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: name lock: %w", err)
+	}
+	// A live object of a DIFFERENT kind already owning this name blocks the
+	// publish; re-publishing the same kind is versioning and is allowed.
+	// Soft-deleted rows (deletion_timestamp set) release the name.
+	var ownerKind, ownerTenant string
+	switch err := tx.QueryRow(ctx,
+		`SELECT kind, tenant_id FROM registry.artifacts
+		 WHERE namespace=$1 AND name=$2 AND kind<>$3 AND deletion_timestamp IS NULL
+		 LIMIT 1`,
+		obj.Metadata.Namespace, obj.Metadata.Name, string(obj.Kind),
+	).Scan(&ownerKind, &ownerTenant); {
+	case err == nil:
+		return v1alpha1.Object{}, false, newNameConflict(obj, v1alpha1.Kind(ownerKind), ownerTenant)
+	case errors.Is(err, pgx.ErrNoRows):
+		// No other kind owns the name — proceed.
+	default:
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: name guard: %w", err)
+	}
+
+	// Auto-assign the next semver when no explicit version was given.
+	if p.autoVersion && autoVersionRequested(obj.Metadata.Tag) {
+		rows, err := tx.Query(ctx,
+			`SELECT tag FROM registry.artifacts WHERE kind=$1 AND namespace=$2 AND name=$3`,
+			string(obj.Kind), obj.Metadata.Namespace, obj.Metadata.Name)
+		if err != nil {
+			return v1alpha1.Object{}, false, fmt.Errorf("postgres: version scan: %w", err)
+		}
+		var tags []string
+		for rows.Next() {
+			var t string
+			if err := rows.Scan(&t); err != nil {
+				rows.Close()
+				return v1alpha1.Object{}, false, err
+			}
+			tags = append(tags, t)
+		}
+		rows.Close()
+		obj.Metadata.Tag = nextVersion(tags)
+	}
+
+	// Content hash depends on the (now-resolved) tag.
+	hash := obj.ContentHash()
+	labels, _ := json.Marshal(obj.Metadata.Labels)
+	annos, _ := json.Marshal(obj.Metadata.Annotations)
+	spec, _ := json.Marshal(orEmpty(obj.Spec))
+
+	// Lock the (maybe-existing) row and read its current content hash.
+	var existingHash string
+	hasExisting := true
+	err = tx.QueryRow(ctx,
+		`SELECT content_hash FROM registry.artifacts
+		 WHERE kind=$1 AND namespace=$2 AND name=$3 AND tag=$4 FOR UPDATE`,
+		string(obj.Kind), obj.Metadata.Namespace, obj.Metadata.Name, obj.Metadata.Tag,
+	).Scan(&existingHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		hasExisting = false
+	} else if err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: apply read: %w", err)
+	}
+
+	// Immutable version tags: refuse to change a published version's content
+	// (the floating "latest" tag is exempt).
+	if p.immutableTags && obj.Metadata.Tag != v1alpha1.DefaultTag && hasExisting && existingHash != hash {
+		return v1alpha1.Object{}, false, ErrImmutableTag
+	}
+
+	// The embedding column ($16) is only included when pgvector is enabled, so
+	// the same Apply path works whether or not the column exists.
+	embCol, embVal := "", ""
+	args := []any{
+		string(obj.Kind), obj.Metadata.Namespace, obj.Metadata.Name, obj.Metadata.Tag, uid,
+		obj.APIVersion, string(obj.Metadata.Visibility), obj.Metadata.TenantID,
+		nullStr(obj.Metadata.OrgID), nullStr(obj.Metadata.TeamID),
+		hash, labels, annos, spec, statusJSON,
+	}
+	if p.vectorEnabled {
+		embCol, embVal = ", embedding", ", $16::vector"
+		args = append(args, vecLiteral(embed.Object(obj)))
+	}
+
+	q := `
 INSERT INTO registry.artifacts
     (kind, namespace, name, tag, uid, api_version, visibility, tenant_id, org_id, team_id,
-     content_hash, labels, annotations, spec, status, created_at, updated_at, deletion_timestamp)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now(), now(), NULL)
+     content_hash, labels, annotations, spec, status` + embCol + `, created_at, updated_at, deletion_timestamp)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15` + embVal + `, now(), now(), NULL)
 ON CONFLICT (kind, namespace, name, tag) DO UPDATE SET
     api_version  = EXCLUDED.api_version,
     visibility   = EXCLUDED.visibility,
@@ -98,7 +335,7 @@ ON CONFLICT (kind, namespace, name, tag) DO UPDATE SET
     content_hash = EXCLUDED.content_hash,
     labels       = EXCLUDED.labels,
     annotations  = EXCLUDED.annotations,
-    spec         = EXCLUDED.spec,
+    spec         = EXCLUDED.spec,` + embeddingUpdate(p.vectorEnabled) + `
     status       = registry.artifacts.status,
     updated_at   = now(),
     deletion_timestamp = NULL
@@ -107,14 +344,36 @@ RETURNING (xmax = 0) AS inserted, uid, created_at, updated_at`
 	var inserted bool
 	var gotUID string
 	var createdAt, updatedAt time.Time
-	err := p.pool.QueryRow(ctx, q,
-		string(obj.Kind), obj.Metadata.Namespace, obj.Metadata.Name, obj.Metadata.Tag, uid,
-		obj.APIVersion, string(obj.Metadata.Visibility), obj.Metadata.TenantID,
-		nullStr(obj.Metadata.OrgID), nullStr(obj.Metadata.TeamID),
-		hash, labels, annos, spec, statusJSON,
-	).Scan(&inserted, &gotUID, &createdAt, &updatedAt)
-	if err != nil {
+	if err := tx.QueryRow(ctx, q, args...).Scan(&inserted, &gotUID, &createdAt, &updatedAt); err != nil {
 		return v1alpha1.Object{}, false, fmt.Errorf("postgres: apply: %w", err)
+	}
+
+	// Append-only revision on every content change (new or changed hash).
+	if !hasExisting || existingHash != hash {
+		var nextRev int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(MAX(revision),0)+1 FROM registry.artifact_revisions
+			 WHERE kind=$1 AND namespace=$2 AND name=$3 AND tag=$4`,
+			string(obj.Kind), obj.Metadata.Namespace, obj.Metadata.Name, obj.Metadata.Tag,
+		).Scan(&nextRev); err != nil {
+			return v1alpha1.Object{}, false, fmt.Errorf("postgres: revision seq: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO registry.artifact_revisions
+			 (kind,namespace,name,tag,revision,uid,api_version,visibility,tenant_id,org_id,team_id,
+			  content_hash,labels,annotations,spec,status,created_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now())`,
+			string(obj.Kind), obj.Metadata.Namespace, obj.Metadata.Name, obj.Metadata.Tag, nextRev,
+			gotUID, obj.APIVersion, string(obj.Metadata.Visibility), obj.Metadata.TenantID,
+			nullStr(obj.Metadata.OrgID), nullStr(obj.Metadata.TeamID),
+			hash, labels, annos, spec, statusJSON,
+		); err != nil {
+			return v1alpha1.Object{}, false, fmt.Errorf("postgres: revision insert: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: commit: %w", err)
 	}
 
 	obj.Metadata.UID = gotUID
@@ -123,6 +382,32 @@ RETURNING (xmax = 0) AS inserted, uid, created_at, updated_at`
 	obj.Metadata.UpdatedAt = &updatedAt
 	obj.Status = status
 	return obj, inserted, nil
+}
+
+// ListRevisions returns the artifact's append-only audit timeline (all tags),
+// newest first.
+func (p *Postgres) ListRevisions(ctx context.Context, kind v1alpha1.Kind, ns, name string) ([]Revision, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT tag, revision, content_hash, visibility, created_at
+		 FROM registry.artifact_revisions
+		 WHERE kind=$1 AND namespace=$2 AND name=$3
+		 ORDER BY created_at DESC, revision DESC`,
+		string(kind), ns, name)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: revisions: %w", err)
+	}
+	defer rows.Close()
+	var out []Revision
+	for rows.Next() {
+		var r Revision
+		var hash string
+		if err := rows.Scan(&r.Tag, &r.Revision, &hash, &r.Visibility, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		r.Digest = "sha256:" + hash
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (p *Postgres) Get(ctx context.Context, kind v1alpha1.Kind, ns, name, tag string) (v1alpha1.Object, error) {
@@ -157,7 +442,18 @@ func (p *Postgres) List(ctx context.Context, opts ListOptions) (ListResult, erro
 	if !opts.IncludeDeleted {
 		where += " AND deletion_timestamp IS NULL"
 	}
-	q := "SELECT " + cols + " FROM registry.artifacts WHERE " + where
+
+	// Semantic ranking: when a search query is present and pgvector is enabled,
+	// order candidates by cosine distance to the query embedding in SQL and let
+	// the pipeline preserve that order (PreRanked) instead of substring-filtering.
+	orderBy := ""
+	if opts.Search != "" && p.vectorEnabled {
+		args = append(args, vecLiteral(embed.Text(opts.Search)))
+		orderBy = fmt.Sprintf(" ORDER BY embedding <=> $%d ASC NULLS LAST", len(args))
+		opts.PreRanked = true
+	}
+
+	q := "SELECT " + cols + " FROM registry.artifacts WHERE " + where + orderBy
 	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
 		return ListResult{}, fmt.Errorf("postgres: list: %w", err)

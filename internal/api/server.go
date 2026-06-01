@@ -17,19 +17,22 @@ import (
 	"github.com/tesserix/agentic-registry/internal/auth"
 	"github.com/tesserix/agentic-registry/internal/config"
 	"github.com/tesserix/agentic-registry/internal/mcp"
+	"github.com/tesserix/agentic-registry/internal/signing"
 	"github.com/tesserix/agentic-registry/internal/store"
+	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
 
 // Server holds the dependencies shared by all handlers.
 type Server struct {
-	store store.Store
-	cfg   config.Config
-	reqs  atomic.Int64
+	store  store.Store
+	cfg    config.Config
+	signer *signing.Signer
+	reqs   atomic.Int64
 }
 
 // New builds the chi router with all routes mounted.
 func New(st store.Store, authn auth.Authenticator, cfg config.Config) http.Handler {
-	s := &Server{store: st, cfg: cfg}
+	s := &Server{store: st, cfg: cfg, signer: signing.New(cfg.SigningKey, cfg.SigningDev)}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -46,8 +49,10 @@ func New(st store.Store, authn auth.Authenticator, cfg config.Config) http.Handl
 	s.mountV0(r)
 	// MCP-Registry-compatible interop API.
 	s.mountV01(r)
-	// Built-in MCP discovery server (catalog-as-MCP, never a proxy).
-	r.Handle("/mcp", mcp.NewDiscoveryServer(st))
+	// Built-in MCP discovery server (catalog-as-MCP, never a proxy). It shares
+	// the signer so Agent Cards rendered over MCP carry the same registry
+	// attestation as the HTTP path — a verifying consumer accepts either.
+	r.Handle("/mcp", mcp.NewDiscoveryServer(st, s.signer))
 
 	// Marketplace SPA (optional) — one image serves API + UI.
 	if cfg.WebDir != "" {
@@ -76,6 +81,35 @@ func spaHandler(dir string) http.HandlerFunc {
 func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && !info.IsDir()
+}
+
+// withIdentity attaches the derived identity (arn/digest/ref) and, when signing
+// is enabled, the registry's Ed25519 attestation over the digest. Applied to
+// every object served to clients.
+func (s *Server) withIdentity(o v1alpha1.Object) v1alpha1.Object {
+	o = o.WithIdentity()
+	if s.signer.Enabled() {
+		o.Metadata.Signature = s.signer.Sign(o.Metadata.Digest)
+		o.Metadata.SignedBy = s.signer.KeyID()
+	}
+	return o
+}
+
+// signingKey publishes the registry's public signing key so consumers can
+// verify digest attestations.
+func (s *Server) signingKey(w http.ResponseWriter, _ *http.Request) {
+	if !s.signer.Enabled() {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":   true,
+		"algorithm": "ed25519",
+		"keyId":     s.signer.KeyID(),
+		"publicKey": s.signer.PublicKeyB64(),
+		"encoding":  "base64",
+		"signs":     "digest", // signature is over the "sha256:<hex>" digest string
+	})
 }
 
 // cors applies a permissive-but-configurable CORS policy for the marketplace UI.

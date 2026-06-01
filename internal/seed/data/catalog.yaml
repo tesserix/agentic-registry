@@ -1,0 +1,217 @@
+# Built-in starter catalog. Embedded into the binary and applied on first
+# start (when the store is empty and SEED_EXAMPLES=true) so a fresh local
+# install has a populated catalog and the ⌘K vector search has content to rank.
+# Diverse artifacts across every kind. Safe to edit; re-seeding is idempotent.
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Skill
+metadata:
+  name: senior-go-engineer
+  visibility: public
+  labels: { domain: code-review, language: go, stability: stable }
+spec:
+  title: Senior Go Engineer
+  description: Writes and reviews production Go services with a strong emphasis on tests, concurrency safety, and clean interfaces.
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Skill
+metadata:
+  name: kubernetes-troubleshooter
+  visibility: public
+  labels: { domain: sre, platform: kubernetes, stability: stable }
+spec:
+  title: Kubernetes Troubleshooter
+  description: Diagnoses failing pods, CrashLoopBackOff, image pull errors, and networking issues across a Kubernetes cluster.
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Skill
+metadata:
+  name: technical-writer
+  visibility: public
+  labels: { domain: docs, stability: beta }
+spec:
+  title: Technical Writer
+  description: Turns rough engineering notes into clear, well-structured documentation and release notes.
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Tool
+metadata:
+  name: postgres-query
+  visibility: public
+  labels: { category: database, language: sql }
+spec:
+  title: Postgres Query
+  description: Runs read-only SQL against a Postgres database and returns rows as JSON, with pgvector similarity search support.
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Tool
+metadata:
+  name: web-fetch
+  visibility: public
+  labels: { category: http }
+spec:
+  title: Web Fetch
+  description: Fetches a URL and returns cleaned, readable text content for grounding and retrieval.
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Tool
+metadata:
+  name: github-pr-reviewer
+  visibility: internal
+  labels: { category: vcs, provider: github }
+spec:
+  title: GitHub PR Reviewer
+  description: Posts inline review comments on a pull request diff using a configured code-review policy.
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: io.github.acme/files
+  tag: "1.0.0"
+  visibility: public
+  labels: { transport: stdio }
+spec:
+  name: io.github.acme/files
+  version: "1.0.0"
+  description: File operations (read, write, list, search) exposed over the Model Context Protocol.
+  packages:
+    - registryType: npm
+      identifier: "@acme/files-mcp"
+      transport: { type: stdio }
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: io.github.acme/slack
+  tag: "0.4.2"
+  visibility: internal
+  labels: { transport: streamableHttp }
+spec:
+  name: io.github.acme/slack
+  version: "0.4.2"
+  description: Send and search Slack messages and channels through an MCP server over streamable HTTP.
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Prompt
+metadata:
+  name: summarize-incident
+  visibility: public
+  labels: { domain: sre }
+spec:
+  title: Summarize Incident
+  description: Condenses a noisy incident timeline into a crisp executive summary with impact, root cause, and follow-ups.
+  template: "Summarize the following incident for leadership:\n\n{{timeline}}"
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Prompt
+metadata:
+  name: commit-message
+  visibility: public
+  labels: { domain: code }
+spec:
+  title: Conventional Commit Message
+  description: Writes a conventional-commits message from a staged git diff.
+  template: "Write a conventional commit message for this diff:\n\n{{diff}}"
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: release-train
+  visibility: public
+  labels: { domain: ci-cd }
+spec:
+  title: Release Train
+  description: Builds, scans, tags, and promotes a service image through dev and prod stages with approval gates.
+  nodes:
+    - { id: build, label: Build image, type: start }
+    - { id: scan, label: Trivy scan, type: task }
+    - { id: dev, label: Deploy to dev, type: task }
+    - { id: approve, label: Manual approval, type: approval }
+    - { id: prod, label: Deploy to prod, type: task }
+    - { id: done, label: Released, type: end }
+  edges:
+    - { from: build, to: scan }
+    - { from: scan, to: dev, label: pass }
+    - { from: dev, to: approve }
+    - { from: approve, to: prod, label: approved }
+    - { from: prod, to: done }
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: triage-bug-report
+  visibility: internal
+  labels: { domain: support }
+spec:
+  title: Triage Bug Report
+  description: Classifies an incoming bug report, reproduces it, links related issues, and assigns a severity.
+  nodes:
+    - { id: intake, label: Intake report, type: start }
+    - { id: classify, label: Classify, type: task }
+    - { id: repro, label: Reproduce, type: task }
+    - { id: sev, label: "Severity?", type: gateway }
+    - { id: assign, label: Assign owner, type: task }
+    - { id: triaged, label: Triaged, type: end }
+  edges:
+    - { from: intake, to: classify }
+    - { from: classify, to: repro }
+    - { from: repro, to: sev }
+    - { from: sev, to: assign, label: high }
+    - { from: assign, to: triaged }
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Blueprint
+metadata:
+  name: rag-chatbot
+  visibility: public
+  labels: { pattern: rag }
+spec:
+  title: RAG Chatbot
+  description: A retrieval-augmented chatbot blueprint wiring an embedder, a pgvector store, a retriever tool, and a chat model.
+  nodes:
+    - { id: ingest, label: Document ingest, type: component }
+    - { id: embed, label: Embedder, type: model }
+    - { id: store, label: pgvector store, type: store }
+    - { id: retriever, label: Retriever tool, type: component }
+    - { id: chat, label: Chat model, type: model }
+  edges:
+    - { from: ingest, to: embed }
+    - { from: embed, to: store }
+    - { from: store, to: retriever }
+    - { from: retriever, to: chat }
+---
+apiVersion: registry.agentic.dev/v1alpha1
+kind: Agent
+metadata:
+  name: oncall-responder
+  visibility: public
+  labels: { domain: sre }
+spec:
+  title: On-Call Responder
+  description: An autonomous agent that watches alerts, investigates Kubernetes and database health, and proposes remediations.
+  # A2A (Agent2Agent) descriptor. The registry renders this into a standards
+  # compliant Agent Card at /v0/agents/oncall-responder/card. `url` is the
+  # agent's OWN live A2A endpoint — the registry never proxies it, it only
+  # advertises it. Any extra fields here pass straight through to the card.
+  a2a:
+    url: https://oncall-responder.devai.svc.cluster.local/a2a/v1
+    preferredTransport: JSONRPC
+    provider:
+      organization: Tesserix
+      url: https://tesserix.app
+    documentationUrl: https://docs.tesserix.app/agents/oncall-responder
+    capabilities:
+      streaming: true
+      pushNotifications: true
+      stateTransitionHistory: false
+    defaultInputModes: [application/json, text/plain]
+    defaultOutputModes: [application/json, text/plain]
+  # Skills: a name resolves to a real registry Skill (single source of truth);
+  # a map is an inline one-off. Both end up in the card's skills[].
+  skills:
+    - kubernetes-troubleshooter
+    - id: propose-remediation
+      name: Propose Remediation
+      description: Drafts a remediation plan (rollback, scale, patch) for a triaged incident and opens it as a PR.
+      tags: [sre, remediation, automation]
+      examples:
+        - "Pod is CrashLoopBackOff after the last deploy — propose a fix."

@@ -1,8 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Search, SlidersHorizontal, Loader2, PackageOpen } from "lucide-react";
+import { parse as parseYAML } from "yaml";
+import { Search, SlidersHorizontal, Loader2, PackageOpen, Plus, Upload } from "lucide-react";
 import { api, KINDS, type Artifact } from "../lib/api";
 import ArtifactCard from "../components/ArtifactCard";
+import ArtifactEditor from "../components/ArtifactEditor";
+
+type Doc = Record<string, unknown>;
+
+// Parse an uploaded manifest: JSON by extension/content, otherwise YAML.
+function parseManifest(name: string, text: string): Doc {
+  const isJson = name.toLowerCase().endsWith(".json");
+  const v = isJson ? JSON.parse(text) : parseYAML(text);
+  if (v == null || typeof v !== "object") throw new Error("manifest must be an object");
+  return v as Doc;
+}
 
 export default function Catalog() {
   const { plural = "skills" } = useParams();
@@ -13,6 +25,27 @@ export default function Catalog() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [labelSelector, setLabelSelector] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [seed, setSeed] = useState<Doc | null>(null);
+  const [uploadErr, setUploadErr] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  const fileInput = useRef<HTMLInputElement | null>(null);
+
+  // Direct upload from the header: parse the file, then open the editor
+  // pre-filled so the user can review/adjust before publishing.
+  async function onUpload(file: File | null | undefined) {
+    if (!file) return;
+    setUploadErr(null);
+    try {
+      const doc = parseManifest(file.name, await file.text());
+      setSeed(doc);
+      setEditorOpen(true);
+    } catch (e) {
+      setUploadErr(`could not load ${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -32,23 +65,54 @@ export default function Catalog() {
     return () => {
       cancelled = true;
     };
-  }, [plural, search, labelSelector]);
+  }, [plural, search, labelSelector, reload]);
 
   const count = useMemo(() => items.length, [items]);
 
   return (
-    <div className="p-7 max-w-6xl mx-auto">
+    <div className="px-8 py-9 max-w-7xl mx-auto">
       <div className="label-eyebrow">Marketplace</div>
-      <div className="flex items-end justify-between gap-4 mt-1">
-        <h1 className="font-serif text-2xl font-medium" style={{ color: "var(--ink-strong)" }}>
+      <div className="flex items-end justify-between gap-4 mt-2">
+        <h1 className="font-serif text-[28px] font-semibold leading-tight" style={{ color: "var(--ink-strong)" }}>
           {meta.label}
         </h1>
-        <span className="font-mono text-[12px]" style={{ color: "var(--ink-muted)" }}>
-          {count} {count === 1 ? "artifact" : "artifacts"}
-        </span>
+        <div className="flex items-center gap-4 pb-1">
+          <span className="font-mono text-[12px]" style={{ color: "var(--ink-muted)" }}>
+            {count} {count === 1 ? "artifact" : "artifacts"}
+          </span>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".yaml,.yml,.json,application/json,application/x-yaml,text/yaml,text/plain"
+            className="hidden"
+            onChange={(e) => onUpload(e.target.files?.[0])}
+          />
+          <button
+            className="btn-secondary"
+            onClick={() => fileInput.current?.click()}
+            title={`Upload a ${meta.kind} manifest (YAML or JSON)`}
+          >
+            <Upload className="w-4 h-4" /> Upload
+          </button>
+          <button
+            className="btn-primary"
+            onClick={() => {
+              setSeed(null);
+              setEditorOpen(true);
+            }}
+          >
+            <Plus className="w-4 h-4" /> New {meta.kind}
+          </button>
+        </div>
       </div>
 
-      <div className="flex gap-3 mt-5 flex-col sm:flex-row">
+      {uploadErr && (
+        <div className="card mt-4 px-4 py-2.5 text-[12px]" style={{ color: "var(--error-ink)", background: "var(--error-soft-bg)", borderColor: "var(--error-soft-bd)" }}>
+          {uploadErr}
+        </div>
+      )}
+
+      <div className="flex gap-3 mt-6 flex-col sm:flex-row">
         <div className="relative flex-1">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-muted)" }} />
           <input
@@ -71,31 +135,49 @@ export default function Catalog() {
         </div>
       </div>
 
-      <div className="mt-6">
+      <div className="mt-7">
         {loading ? (
-          <div className="flex items-center gap-2 py-16 justify-center" style={{ color: "var(--ink-muted)" }}>
-            <Loader2 className="w-4 h-4 animate-spin" /> loading…
+          <div className="flex items-center gap-2 py-20 justify-center text-[13px]" style={{ color: "var(--ink-muted)" }}>
+            <Loader2 className="w-4 h-4 spin" /> loading…
           </div>
         ) : error ? (
-          <div className="panel p-6 text-[13px]" style={{ color: "var(--error-ink)" }}>
+          <div className="card p-6 text-[13px]" style={{ color: "var(--error-ink)" }}>
             {error}
           </div>
         ) : count === 0 ? (
-          <div className="panel p-10 flex flex-col items-center text-center gap-2" style={{ color: "var(--ink-muted)" }}>
-            <PackageOpen className="w-6 h-6" />
-            <p className="text-[13px]">No {meta.label.toLowerCase()} match your query.</p>
+          <div className="card p-14 flex flex-col items-center text-center gap-3" style={{ color: "var(--ink-muted)" }}>
+            <PackageOpen className="w-7 h-7" />
+            <p className="text-[14px]" style={{ color: "var(--ink-soft)" }}>
+              No {meta.label.toLowerCase()} match your query.
+            </p>
             <p className="font-mono text-[12px]">
               Publish one: <code>agentic apply -f {meta.kind.toLowerCase()}.yaml</code>
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
             {items.map((a) => (
               <ArtifactCard key={`${a.metadata.namespace}/${a.metadata.name}`} plural={plural} a={a} />
             ))}
           </div>
         )}
       </div>
+
+      <ArtifactEditor
+        kind={meta.kind}
+        plural={plural}
+        open={editorOpen}
+        seed={seed}
+        onClose={() => {
+          setEditorOpen(false);
+          setSeed(null);
+        }}
+        onCreated={() => {
+          setEditorOpen(false);
+          setSeed(null);
+          setReload((n) => n + 1);
+        }}
+      />
     </div>
   );
 }

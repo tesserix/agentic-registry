@@ -43,6 +43,28 @@ type Config struct {
 	// WebDir, when set, serves the built marketplace SPA (with history-API
 	// fallback) from this directory so one image ships both API and UI.
 	WebDir string
+
+	// SeedExamples applies the embedded starter catalog on first start when the
+	// store is empty. Intended for local/dev/demo; leave false in production.
+	SeedExamples bool
+
+	// ImmutableTags rejects re-publishing an existing version tag with different
+	// content (the floating "latest" tag stays mutable). Artifact-repository
+	// semantics: a released version is permanent. Default true.
+	ImmutableTags bool
+
+	// AutoVersion assigns the next semver tag (v0.0.1, v0.0.2, …) when a publish
+	// omits an explicit version (tag empty or "latest"), so every release is a
+	// unique, immutable version rather than an overwritten "latest". Default true.
+	AutoVersion bool
+
+	// SigningKey is a base64 Ed25519 private key (seed or full key) the registry
+	// uses to sign artifact digests (provenance attestation). Empty disables
+	// signing unless SigningDev is set.
+	SigningKey string
+	// SigningDev generates an ephemeral signing key when no SigningKey is set —
+	// for local/dev so the feature works out of the box.
+	SigningDev bool
 }
 
 func Load() Config {
@@ -59,6 +81,11 @@ func Load() Config {
 		MultiTenant:   env("MULTI_TENANT", "false") == "true",
 		PublicBaseURL: env("PUBLIC_BASE_URL", "http://localhost:8080"),
 		WebDir:        env("WEB_DIR", ""),
+		SeedExamples:  env("SEED_EXAMPLES", "false") == "true",
+		ImmutableTags: env("IMMUTABLE_TAGS", "true") == "true",
+		AutoVersion:   env("AUTO_VERSION", "true") == "true",
+		SigningKey:    env("SIGNING_PRIVATE_KEY", ""),
+		SigningDev:    env("SIGNING_DEV", "false") == "true",
 	}
 	if c.DatabaseURL != "" && c.StoreBackend == "memory" {
 		c.StoreBackend = "postgres"

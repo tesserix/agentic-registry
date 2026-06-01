@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/tesserix/agentic-registry/internal/selector"
@@ -65,6 +67,83 @@ func TestSoftDeleteHidesFromList(t *testing.T) {
 	}
 	if _, err := m.Get(ctx, v1alpha1.KindSkill, "default", "gone", "latest"); err != ErrNotFound {
 		t.Fatalf("Get of deleted should be ErrNotFound, got %v", err)
+	}
+}
+
+func mkOfKind(kind v1alpha1.Kind, ns, name string) v1alpha1.Object {
+	return v1alpha1.Object{
+		Kind:     kind,
+		Metadata: v1alpha1.ObjectMeta{Name: name, Namespace: ns},
+		Spec:     map[string]interface{}{"description": "test " + name},
+	}
+}
+
+func TestNameUniqueAcrossKindsInNamespace(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+
+	// A Skill claims "payments" in the civica namespace.
+	if _, created, err := m.Apply(ctx, mkOfKind(v1alpha1.KindSkill, "civica", "payments")); err != nil || !created {
+		t.Fatalf("first claim should succeed: created=%v err=%v", created, err)
+	}
+
+	// A different kind (MCPServer) trying the same name in the same namespace
+	// is rejected with a typed, meaningful conflict.
+	_, _, err := m.Apply(ctx, mkOfKind(v1alpha1.KindMCPServer, "civica", "payments"))
+	if !errors.Is(err, ErrNameConflict) {
+		t.Fatalf("cross-kind same-name publish must conflict, got %v", err)
+	}
+	var nce *NameConflictError
+	if !errors.As(err, &nce) {
+		t.Fatalf("expected *NameConflictError, got %T", err)
+	}
+	if nce.OwnerKind != v1alpha1.KindSkill || nce.WantKind != v1alpha1.KindMCPServer {
+		t.Fatalf("conflict should name owner=Skill want=MCPServer, got owner=%s want=%s", nce.OwnerKind, nce.WantKind)
+	}
+	if nce.OwnerARN == "" || !strings.Contains(err.Error(), "payments") {
+		t.Fatalf("conflict message must carry name + owner ARN, got %q", err.Error())
+	}
+}
+
+func TestNameReusableInDifferentNamespace(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	// Same name, different orgs/teams (namespaces) — both allowed.
+	if _, _, err := m.Apply(ctx, mkOfKind(v1alpha1.KindSkill, "civica", "payments")); err != nil {
+		t.Fatalf("civica claim: %v", err)
+	}
+	if _, _, err := m.Apply(ctx, mkOfKind(v1alpha1.KindMCPServer, "zendesk", "payments")); err != nil {
+		t.Fatalf("zendesk reuse in another namespace should be allowed, got %v", err)
+	}
+	if _, _, err := m.Apply(ctx, mkOfKind(v1alpha1.KindTool, "civica-teamb", "payments")); err != nil {
+		t.Fatalf("team namespace reuse should be allowed, got %v", err)
+	}
+}
+
+func TestSameKindRepublishIsVersioningNotConflict(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	if _, _, err := m.Apply(ctx, mkOfKind(v1alpha1.KindSkill, "civica", "payments")); err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+	// Re-publishing the SAME kind/name is the owner versioning — never a conflict.
+	if _, _, err := m.Apply(ctx, mkOfKind(v1alpha1.KindSkill, "civica", "payments")); err != nil {
+		t.Fatalf("same-kind re-publish must not conflict, got %v", err)
+	}
+}
+
+func TestNameFreedAfterSoftDelete(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	if _, _, err := m.Apply(ctx, mkOfKind(v1alpha1.KindSkill, "civica", "payments")); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := m.Delete(ctx, v1alpha1.KindSkill, "civica", "payments", "latest"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	// Once the Skill is soft-deleted, another kind may reclaim the name.
+	if _, _, err := m.Apply(ctx, mkOfKind(v1alpha1.KindMCPServer, "civica", "payments")); err != nil {
+		t.Fatalf("name should be reclaimable after delete, got %v", err)
 	}
 }
 

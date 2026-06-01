@@ -29,12 +29,25 @@ func (s *Server) mountV0(r chi.Router) {
 		// Prompt render (Portkey-style; keeps the registry off the request path).
 		r.Post("/prompts/{name}/render", s.v0Render)
 
+		// Global, cross-kind discovery (powers the Cmd+K palette). Registered
+		// before /{plural} so the static path wins over the collection param.
+		r.Get("/search", s.v0Search)
+
+		// Public signing key for verifying digest attestations.
+		r.Get("/signing-key", s.signingKey)
+
 		// Per-collection CRUD.
 		r.Route("/{plural}", func(r chi.Router) {
 			r.Get("/", s.v0List)
 			r.Post("/", s.v0Publish)
 			r.Get("/{name}", s.v0GetLatest)
 			r.Get("/{name}/tags", s.v0Tags)
+			r.Get("/{name}/revisions", s.v0Revisions)
+			// A2A Agent Card (Agent kind only). The .well-known suffix lets a
+			// consumer that knows only the A2A convention resolve the card.
+			r.Get("/{name}/card", s.v0AgentCard)
+			r.Get("/{name}/.well-known/agent-card.json", s.v0AgentCard)
+			r.Get("/{name}/{tag}/card", s.v0AgentCardTag)
 			r.Get("/{name}/{tag}", s.v0Get)
 			r.Delete("/{name}/{tag}", s.v0Delete)
 		})
@@ -89,9 +102,46 @@ func (s *Server) v0List(w http.ResponseWriter, r *http.Request) {
 	}
 	// devai's client expects a bare JSON array per collection.
 	out := make([]v1alpha1.Object, 0, len(res.Items))
-	out = append(out, res.Items...)
+	for _, o := range res.Items {
+		out = append(out, s.withIdentity(o))
+	}
 	if res.NextCursor != "" {
 		w.Header().Set("X-Next-Cursor", res.NextCursor)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// v0Search runs one cross-kind, ranked query for the command palette. With
+// pgvector enabled the store returns cosine-ranked matches; otherwise it falls
+// back to substring. Kind is left empty so every collection is searched at once.
+func (s *Server) v0Search(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, http.StatusOK, []v1alpha1.Object{})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = v1alpha1.DefaultNamespace
+	}
+	res, err := s.store.List(r.Context(), store.ListOptions{
+		Namespace:  ns,
+		Search:     q,
+		LatestOnly: true,
+		Limit:      limit,
+		CanRead:    readPredicate(r),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]v1alpha1.Object, 0, len(res.Items))
+	for _, o := range res.Items {
+		out = append(out, s.withIdentity(o))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -124,7 +174,7 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request, tag string) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, obj)
+	writeJSON(w, http.StatusOK, s.withIdentity(obj))
 }
 
 func (s *Server) v0Tags(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +203,34 @@ func (s *Server) v0Tags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"name": name, "tags": tags})
+}
+
+// v0Revisions returns the artifact's append-only audit timeline (all tags).
+func (s *Server) v0Revisions(w http.ResponseWriter, r *http.Request) {
+	kind, ok := s.kindFromPath(w, r)
+	if !ok {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	// Confirm read access via the latest tag before exposing history.
+	latest, err := s.store.Get(r.Context(), kind, s.namespace(r), name, "")
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err == nil && !auth.CanRead(identity(r), latest) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	revs, err := s.store.ListRevisions(r.Context(), kind, s.namespace(r), name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if revs == nil {
+		revs = []store.Revision{}
+	}
+	writeJSON(w, http.StatusOK, revs)
 }
 
 func (s *Server) v0Publish(w http.ResponseWriter, r *http.Request) {
@@ -188,6 +266,12 @@ func (s *Server) applyOne(w http.ResponseWriter, r *http.Request, obj v1alpha1.O
 		return
 	}
 	result, created, err := s.store.Apply(r.Context(), obj)
+	if errors.Is(err, store.ErrImmutableTag) || errors.Is(err, store.ErrNameConflict) {
+		// 409 with the full reason: which name/namespace collided and which
+		// kind + ARN already owns it, so the publisher knows exactly why.
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -196,7 +280,7 @@ func (s *Server) applyOne(w http.ResponseWriter, r *http.Request, obj v1alpha1.O
 	if created {
 		status = okStatus
 	}
-	writeJSON(w, status, result)
+	writeJSON(w, status, s.withIdentity(result))
 }
 
 func (s *Server) v0Delete(w http.ResponseWriter, r *http.Request) {

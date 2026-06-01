@@ -3,13 +3,14 @@ CLI         := agentic
 PKG         := github.com/tesserix/agentic-registry
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS     := -s -w -X $(PKG)/internal/config.Version=$(VERSION)
+CLI_LDFLAGS := -s -w -X main.Version=$(VERSION)
 
 KIND_CLUSTER ?= kind
 NS           ?= agentic-registry
 # Helm chart lives in the tesserix-k8s repo (sibling dir), per platform convention.
 CHART        ?= ../tesserix-k8s/charts/apps/agentic-registry
 
-.PHONY: all build cli run test lint fmt vet tidy docker clean kind-image kind-deploy kind-argo helm-lint local-secret
+.PHONY: all build cli release-snapshot run test lint fmt vet tidy docker clean kind-image kind-deploy kind-argo helm-lint local-secret
 
 all: build cli
 
@@ -17,7 +18,10 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/agentic-registry
 
 cli:
-	go build -ldflags "$(LDFLAGS)" -o bin/$(CLI) ./cmd/agentic
+	go build -ldflags "$(CLI_LDFLAGS)" -o bin/$(CLI) ./cmd/agentic
+
+release-snapshot:                   ## local GoReleaser dry-run (no publish)
+	goreleaser release --snapshot --clean
 
 run:
 	go run ./cmd/agentic-registry

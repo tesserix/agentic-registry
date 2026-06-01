@@ -19,14 +19,21 @@ const defaultLimit = 50
 // Memory is an in-memory Store. It is the zero-dependency default so the server
 // runs with `make run` and no Postgres. Not durable; for dev/test/demos.
 type Memory struct {
-	mu   sync.RWMutex
-	objs map[string]v1alpha1.Object // key: kind|ns|name|tag
-	now  func() time.Time
+	mu            sync.RWMutex
+	objs          map[string]v1alpha1.Object // key: kind|ns|name|tag
+	revs          map[string][]Revision      // key: kind|ns|name (all tags)
+	now           func() time.Time
+	immutableTags bool
+	autoVersion   bool
 }
 
 // NewMemory returns an empty in-memory store.
 func NewMemory() *Memory {
-	return &Memory{objs: map[string]v1alpha1.Object{}, now: time.Now}
+	return &Memory{objs: map[string]v1alpha1.Object{}, revs: map[string][]Revision{}, now: time.Now}
+}
+
+func revKey(kind v1alpha1.Kind, ns, name string) string {
+	return string(kind) + "|" + ns + "|" + name
 }
 
 func key(kind v1alpha1.Kind, ns, name, tag string) string {
@@ -35,13 +42,46 @@ func key(kind v1alpha1.Kind, ns, name, tag string) string {
 
 func (m *Memory) Apply(_ context.Context, obj v1alpha1.Object) (v1alpha1.Object, bool, error) {
 	obj = obj.Normalized()
-	hash := obj.ContentHash()
-	k := key(obj.Kind, obj.Metadata.Namespace, obj.Metadata.Name, obj.Metadata.Tag)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now().UTC()
+
+	// Namespace-scoped name uniqueness across all kinds: a live object of a
+	// DIFFERENT kind already holding this (namespace, name) blocks the publish.
+	// Re-publishing the same kind falls through (versioning). Soft-deleted rows
+	// release the name, so it can be reclaimed by any kind.
+	for _, o := range m.objs {
+		if o.Metadata.Namespace == obj.Metadata.Namespace &&
+			o.Metadata.Name == obj.Metadata.Name &&
+			o.Kind != obj.Kind &&
+			o.Metadata.DeletionTimestamp == nil {
+			return v1alpha1.Object{}, false, newNameConflict(obj, o.Kind, o.Metadata.TenantID)
+		}
+	}
+
+	// Auto-assign the next semver when no explicit version was given, so each
+	// publish is a unique immutable release (v0.0.1, v0.0.2, …).
+	if m.autoVersion && autoVersionRequested(obj.Metadata.Tag) {
+		var tags []string
+		for _, o := range m.objs {
+			if o.Kind == obj.Kind && o.Metadata.Namespace == obj.Metadata.Namespace && o.Metadata.Name == obj.Metadata.Name {
+				tags = append(tags, o.Metadata.Tag)
+			}
+		}
+		obj.Metadata.Tag = nextVersion(tags)
+	}
+
+	hash := obj.ContentHash()
+	k := key(obj.Kind, obj.Metadata.Namespace, obj.Metadata.Name, obj.Metadata.Tag)
 	prev, existed := m.objs[k]
+
+	// Immutable version tags: a published version may not change content
+	// (the floating "latest" tag is exempt).
+	if m.immutableTags && existed && obj.Metadata.Tag != v1alpha1.DefaultTag &&
+		prev.Metadata.DeletionTimestamp == nil && prev.Metadata.ContentHash != hash {
+		return v1alpha1.Object{}, false, ErrImmutableTag
+	}
 
 	obj.Metadata.ContentHash = hash
 	obj.Metadata.UpdatedAt = &now
@@ -60,7 +100,37 @@ func (m *Memory) Apply(_ context.Context, obj v1alpha1.Object) (v1alpha1.Object,
 	obj.Status["status"] = "active"
 
 	m.objs[k] = obj
+
+	// Append an immutable revision on every content change (new or changed
+	// hash). Identical re-applies don't add a revision.
+	if !existed || prev.Metadata.ContentHash != hash {
+		rk := revKey(obj.Kind, obj.Metadata.Namespace, obj.Metadata.Name)
+		var maxForTag int64
+		for _, r := range m.revs[rk] {
+			if r.Tag == obj.Metadata.Tag && r.Revision > maxForTag {
+				maxForTag = r.Revision
+			}
+		}
+		m.revs[rk] = append(m.revs[rk], Revision{
+			Tag:        obj.Metadata.Tag,
+			Revision:   maxForTag + 1,
+			Digest:     "sha256:" + hash,
+			Visibility: string(obj.Metadata.Visibility),
+			CreatedAt:  now,
+		})
+	}
 	return obj, !existed, nil
+}
+
+func (m *Memory) ListRevisions(_ context.Context, kind v1alpha1.Kind, ns, name string) ([]Revision, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	src := m.revs[revKey(kind, ns, name)]
+	out := make([]Revision, len(src))
+	copy(out, src)
+	// Newest first.
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
 }
 
 func (m *Memory) Get(_ context.Context, kind v1alpha1.Kind, ns, name, tag string) (v1alpha1.Object, error) {
@@ -111,20 +181,28 @@ func (m *Memory) List(_ context.Context, opts ListOptions) (ListResult, error) {
 // to latest tag → cursor pagination. Centralizing it guarantees identical
 // semantics across the in-memory and Postgres stores.
 func page(candidates []v1alpha1.Object, opts ListOptions) ListResult {
-	sort.Slice(candidates, func(i, j int) bool {
-		a, b := candidates[i].Metadata, candidates[j].Metadata
-		if a.Namespace != b.Namespace {
-			return a.Namespace < b.Namespace
-		}
-		if a.Name != b.Name {
-			return a.Name < b.Name
-		}
-		return a.Tag < b.Tag
-	})
+	// PreRanked input already arrives in relevance order (e.g. pgvector cosine)
+	// and must not be re-sorted; otherwise apply the stable name sort.
+	if !opts.PreRanked {
+		sort.Slice(candidates, func(i, j int) bool {
+			a, b := candidates[i].Metadata, candidates[j].Metadata
+			if a.Namespace != b.Namespace {
+				return a.Namespace < b.Namespace
+			}
+			if a.Name != b.Name {
+				return a.Name < b.Name
+			}
+			return a.Tag < b.Tag
+		})
+	}
 
 	matched := filter(candidates, opts)
 	if opts.LatestOnly {
-		matched = collapseLatest(matched)
+		if opts.PreRanked {
+			matched = collapseLatestPreserveOrder(matched)
+		} else {
+			matched = collapseLatest(matched)
+		}
 	}
 
 	limit := opts.Limit
@@ -170,7 +248,9 @@ func filter(in []v1alpha1.Object, opts ListOptions) []v1alpha1.Object {
 		if !opts.Selector.Empty() && !opts.Selector.Matches(o.Metadata.Labels) {
 			continue
 		}
-		if opts.Search != "" && !matchesSearch(o, opts.Search) {
+		// PreRanked results were already ranked by relevance upstream; applying
+		// the substring filter here would discard semantically-near matches.
+		if opts.Search != "" && !opts.PreRanked && !matchesSearch(o, opts.Search) {
 			continue
 		}
 		out = append(out, o)
@@ -211,6 +291,24 @@ func collapseLatest(in []v1alpha1.Object) []v1alpha1.Object {
 		}
 		return out[i].Metadata.Name < out[j].Metadata.Name
 	})
+	return out
+}
+
+// collapseLatestPreserveOrder keeps the first-seen row per (namespace,name)
+// without re-sorting. The input is in relevance order (closest first), so the
+// first occurrence is the best match for that artifact and the overall ranking
+// is preserved.
+func collapseLatestPreserveOrder(in []v1alpha1.Object) []v1alpha1.Object {
+	seen := map[string]bool{}
+	out := in[:0:0]
+	for _, o := range in {
+		k := o.Metadata.Namespace + "|" + o.Metadata.Name
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, o)
+	}
 	return out
 }
 

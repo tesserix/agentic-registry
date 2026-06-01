@@ -12,12 +12,21 @@ import (
 func New(ctx context.Context, cfg config.Config) (Store, error) {
 	switch cfg.StoreBackend {
 	case "", "memory":
-		return NewMemory(), nil
+		m := NewMemory()
+		m.immutableTags = cfg.ImmutableTags
+		m.autoVersion = cfg.AutoVersion
+		return m, nil
 	case "postgres":
 		if cfg.DatabaseURL == "" {
 			return nil, fmt.Errorf("store: DATABASE_URL required for postgres backend")
 		}
-		return NewPostgres(ctx, cfg.DatabaseURL)
+		p, err := NewPostgres(ctx, cfg.DatabaseURL)
+		if err != nil {
+			return nil, err
+		}
+		p.immutableTags = cfg.ImmutableTags
+		p.autoVersion = cfg.AutoVersion
+		return p, nil
 	default:
 		return nil, fmt.Errorf("store: unknown backend %q", cfg.StoreBackend)
 	}
