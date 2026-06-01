@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/tesserix/agentic-registry/internal/auth"
+	"github.com/tesserix/agentic-registry/internal/resolve"
 	"github.com/tesserix/agentic-registry/internal/selector"
 	"github.com/tesserix/agentic-registry/internal/store"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
@@ -107,15 +108,27 @@ func (s *Server) resolveMCPServerTools(ctx context.Context, id auth.Identity, se
 			if ref == "" || byWire[ref] || byName[ref] {
 				continue
 			}
-			// Last chance: a directly-named Tool artifact (not selector-matched).
+			// Last chance in the registry tier: a directly-named Tool artifact.
 			if obj, err := s.store.Get(ctx, v1alpha1.KindTool, ns, ref, ""); err == nil && auth.CanRead(id, obj) {
 				resolved = append(resolved, s.withIdentity(obj))
 				byName[ref] = true
 				continue
 			}
+			// Upstream tier: pull from a configured Source and pull-through-cache
+			// it into the registry, then bind — so the next resolve is a local hit.
+			if s.resolver.Enabled() {
+				if obj, rerr := s.resolver.Resolve(ctx, resolve.Ref{
+					Name: ref, Namespace: ns, ServerName: server.Metadata.Name,
+				}); rerr == nil && obj != nil {
+					resolved = append(resolved, s.withIdentity(*obj))
+					byName[obj.Metadata.Name] = true
+					continue
+				}
+			}
+			// NOTIFY tier: not anywhere — clear, actionable, never silent.
 			unresolved = append(unresolved, UnresolvedRef{
 				Kind: string(v1alpha1.KindTool), Ref: ref,
-				Reason: "not found in registry (Phase 3 will pull from upstream)",
+				Reason: "not found in registry or any upstream source",
 			})
 		}
 	}

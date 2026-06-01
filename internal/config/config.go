@@ -37,6 +37,13 @@ type Config struct {
 	// CORS allowed origins for the marketplace UI (comma-separated).
 	CORSOrigins []string
 
+	// ToolSourceURLs are upstream tool catalogs for the pull-through resolver
+	// (docs/agentic/MCP-HUB.md §5.5). Each entry is "name=urlTemplate" (or just a
+	// urlTemplate; name defaults to its host); the template must contain "{name}".
+	// When a declared tool is absent locally the resolver tries these in order and
+	// pull-through-caches the first hit. Empty = registry-only (no upstream).
+	ToolSourceURLs []string
+
 	// PublicBaseURL is advertised in server.json and discovery responses.
 	PublicBaseURL string
 
@@ -92,6 +99,13 @@ func Load() Config {
 	}
 	if origins := env("CORS_ORIGINS", "*"); origins != "" {
 		c.CORSOrigins = strings.Split(origins, ",")
+	}
+	if srcs := env("TOOL_SOURCE_URLS", ""); srcs != "" {
+		for _, s := range strings.Split(srcs, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				c.ToolSourceURLs = append(c.ToolSourceURLs, s)
+			}
+		}
 	}
 	return c
 }

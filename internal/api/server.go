@@ -17,6 +17,7 @@ import (
 	"github.com/tesserix/agentic-registry/internal/auth"
 	"github.com/tesserix/agentic-registry/internal/config"
 	"github.com/tesserix/agentic-registry/internal/mcp"
+	"github.com/tesserix/agentic-registry/internal/resolve"
 	"github.com/tesserix/agentic-registry/internal/signing"
 	"github.com/tesserix/agentic-registry/internal/store"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
@@ -24,15 +25,21 @@ import (
 
 // Server holds the dependencies shared by all handlers.
 type Server struct {
-	store  store.Store
-	cfg    config.Config
-	signer *signing.Signer
-	reqs   atomic.Int64
+	store    store.Store
+	cfg      config.Config
+	signer   *signing.Signer
+	resolver *resolve.Resolver // upstream pull-through tool resolver (may be no-op)
+	reqs     atomic.Int64
 }
 
 // New builds the chi router with all routes mounted.
 func New(st store.Store, authn auth.Authenticator, cfg config.Config) http.Handler {
-	s := &Server{store: st, cfg: cfg, signer: signing.New(cfg.SigningKey, cfg.SigningDev)}
+	s := &Server{
+		store:    st,
+		cfg:      cfg,
+		signer:   signing.New(cfg.SigningKey, cfg.SigningDev),
+		resolver: resolve.New(st, resolve.SourcesFromConfig(cfg.ToolSourceURLs), nil),
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
