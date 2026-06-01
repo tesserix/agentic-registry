@@ -93,14 +93,17 @@ func (s *Server) agentResolved(w http.ResponseWriter, r *http.Request, tag strin
 	if !ok {
 		return
 	}
-	if kind != v1alpha1.KindAgent {
-		writeErr(w, http.StatusBadRequest, "resolution is only defined for agents; use /v0/agents/{name}/resolved")
+	// Composition resolution is defined for Agents (skills/tools/mcpServers/
+	// prompts) and MCPServers (their tool set — registry tier of the resolution
+	// chain). Other kinds have nothing to resolve.
+	if kind != v1alpha1.KindAgent && kind != v1alpha1.KindMCPServer {
+		writeErr(w, http.StatusBadRequest, "resolution is only defined for agents and mcpservers")
 		return
 	}
-	ns := s.namespace(r)
 	name := chi.URLParam(r, "name")
+	ns := s.resolveNamespace(r, kind, name) // resolve across readable namespaces
 
-	agent, err := s.store.Get(r.Context(), kind, ns, name, tag)
+	obj, err := s.store.Get(r.Context(), kind, ns, name, tag)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -110,14 +113,19 @@ func (s *Server) agentResolved(w http.ResponseWriter, r *http.Request, tag strin
 		return
 	}
 	id := identity(r)
-	if !auth.CanRead(id, agent) {
+	if !auth.CanRead(id, obj) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	agent = s.withIdentity(agent)
-	resolved, unresolved := s.resolveAgentRefs(r.Context(), id, agent)
+	obj = s.withIdentity(obj)
+
+	if kind == v1alpha1.KindMCPServer {
+		writeJSON(w, http.StatusOK, s.mcpResolved(r.Context(), id, obj))
+		return
+	}
+	resolved, unresolved := s.resolveAgentRefs(r.Context(), id, obj)
 	writeJSON(w, http.StatusOK, ResolvedAgent{
-		Agent:      agent,
+		Agent:      obj,
 		Resolved:   resolved,
 		Unresolved: unresolved,
 	})
