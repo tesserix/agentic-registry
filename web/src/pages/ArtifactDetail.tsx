@@ -51,7 +51,7 @@ export default function ArtifactDetail() {
 
   if (error) {
     return (
-      <div className="px-8 py-9 max-w-5xl mx-auto">
+      <div className="px-4 sm:px-8 py-7 sm:py-9 max-w-5xl mx-auto">
         <Back plural={plural} label={meta.label} />
         <div className="card p-6 mt-4 text-[13px]" style={{ color: "var(--error-ink)" }}>
           {error}
@@ -76,13 +76,13 @@ export default function ArtifactDetail() {
   const pullCmd = `agentic pull ${m.ref ?? `${plural}/${m.namespace}/${m.name}@${m.tag ?? "latest"}`}`;
 
   return (
-    <div className="px-8 py-9 max-w-5xl mx-auto">
+    <div className="px-4 sm:px-8 py-7 sm:py-9 max-w-5xl mx-auto">
       <Back plural={plural} label={meta.label} />
 
-      <div className="flex items-start justify-between gap-4 mt-4">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4 mt-4">
         <div className="min-w-0">
           <div className="label-eyebrow">{meta.kind}</div>
-          <h1 className="font-serif text-3xl font-semibold mt-1" style={{ color: "var(--ink-strong)" }}>
+          <h1 className="font-serif text-2xl sm:text-3xl font-semibold mt-1 break-words" style={{ color: "var(--ink-strong)" }}>
             {title}
           </h1>
           <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -98,7 +98,7 @@ export default function ArtifactDetail() {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 flex-wrap sm:shrink-0">
           {verified && (
             <span className="chip badge-verified">
               <ShieldCheck className="w-3 h-3" /> verified

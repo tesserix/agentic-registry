@@ -70,13 +70,13 @@ export default function Catalog() {
   const count = useMemo(() => items.length, [items]);
 
   return (
-    <div className="px-8 py-9 max-w-7xl mx-auto">
+    <div className="px-4 sm:px-8 py-7 sm:py-9 max-w-7xl mx-auto">
       <div className="label-eyebrow">Marketplace</div>
-      <div className="flex items-end justify-between gap-4 mt-2">
-        <h1 className="font-serif text-[28px] font-semibold leading-tight" style={{ color: "var(--ink-strong)" }}>
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mt-2">
+        <h1 className="font-serif text-[24px] sm:text-[28px] font-semibold leading-tight" style={{ color: "var(--ink-strong)" }}>
           {meta.label}
         </h1>
-        <div className="flex items-center gap-4 pb-1">
+        <div className="flex items-center gap-3 flex-wrap sm:pb-1">
           <span className="font-mono text-[12px]" style={{ color: "var(--ink-muted)" }}>
             {count} {count === 1 ? "artifact" : "artifacts"}
           </span>

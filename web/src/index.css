@@ -113,6 +113,19 @@ html {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Don't let mobile Safari inflate text on rotate to landscape. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* ---- Mobile / touch polish ------------------------------------------------ */
+/* Kill the grey tap-flash on touch; we have our own :active states. */
+a, button, [role="button"], .nav-item, .card-link, summary {
+  -webkit-tap-highlight-color: transparent;
+}
+/* On coarse (touch) pointers, give the sidebar nav comfortable 44px targets. */
+@media (pointer: coarse) {
+  .nav-item { padding-top: 11px; padding-bottom: 11px; }
 }
 body {
   background: var(--canvas);
