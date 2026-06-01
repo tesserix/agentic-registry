@@ -26,6 +26,10 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/tesserix/agentic-registry/adapters/agentgateway"
+	"github.com/tesserix/agentic-registry/adapters/kagent"
+	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
 
 // Version is set at build time via -ldflags (GoReleaser).
@@ -64,6 +68,8 @@ func main() {
 		err = cmdDelete(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "export":
+		err = cmdExport(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Printf("agentic %s\n", Version)
 		return
@@ -98,6 +104,7 @@ Usage:
   agentic verify <plural> <name> [--tag T]   verify the registry's signature
   agentic delete <plural> <name> <tag>  delete one version
   agentic status                        registry endpoint, health, signing key
+  agentic export <target> <agent>       render an agent for a runtime (target: kagent | agentgateway)
   agentic version                       print the CLI version
 
 Output: add -o json (or --json) to list / search / versions / history for raw JSON.
@@ -428,6 +435,69 @@ func cmdVerify(args []string) error {
 }
 
 // ---- http -------------------------------------------------------------------
+
+// resolvedAgent mirrors the /v0/agents/{name}/resolved response (api.ResolvedAgent)
+// so the CLI can feed the export adapters without importing internal/api.
+type resolvedAgent struct {
+	Agent      v1alpha1.Object              `json:"agent"`
+	Resolved   map[string][]v1alpha1.Object `json:"resolved"`
+	Unresolved []struct {
+		Kind, Ref, Reason string
+	} `json:"unresolved,omitempty"`
+}
+
+// cmdExport renders a registry Agent for a runtime control plane. It fetches
+// the agent's resolved composition (so MCP servers etc. are already looked up)
+// and hands it to the kagent / agentgateway adapter, printing Kubernetes YAML.
+//
+//	agentic export kagent <agent> [--namespace NS] [--model-config REF] [--gateway-url URL]
+//	agentic export agentgateway <agent> [--namespace NS] [--gateway NAME] [--path-prefix /mcp]
+func cmdExport(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: agentic export <kagent|agentgateway> <agent> [flags]")
+	}
+	target, name := args[0], args[1]
+	fs := flags(args[2:])
+
+	c := loadConfig()
+	raw, err := requestRaw(c, http.MethodGet, "/v0/agents/"+url.PathEscape(name)+"/resolved", "", nil)
+	if err != nil {
+		return err
+	}
+	var ra resolvedAgent
+	if err := json.Unmarshal(raw, &ra); err != nil {
+		return fmt.Errorf("decode resolved agent: %w", err)
+	}
+	for _, u := range ra.Unresolved {
+		fmt.Fprintf(os.Stderr, "warning: unresolved %s %q (%s)\n", u.Kind, u.Ref, u.Reason)
+	}
+	mcpServers := ra.Resolved["mcpServers"]
+
+	var out []byte
+	switch target {
+	case "agentgateway", "gateway":
+		out, err = agentgateway.Build(mcpServers, agentgateway.Options{
+			Namespace:        fs["namespace"],
+			GatewayName:      fs["gateway"],
+			GatewayNamespace: fs["gateway-namespace"],
+			PathPrefix:       fs["path-prefix"],
+			SandboxNamespace: fs["sandbox-namespace"],
+		})
+	case "kagent":
+		out, err = kagent.Build(ra.Agent, mcpServers, kagent.Options{
+			Namespace:      fs["namespace"],
+			ModelConfigRef: fs["model-config"],
+			GatewayURL:     fs["gateway-url"],
+		})
+	default:
+		return fmt.Errorf("unknown export target %q (want: kagent | agentgateway)", target)
+	}
+	if err != nil {
+		return err
+	}
+	os.Stdout.Write(out)
+	return nil
+}
 
 func request(c config, method, path, contentType string, body []byte) (string, error) {
 	out, err := requestRaw(c, method, path, contentType, body)
