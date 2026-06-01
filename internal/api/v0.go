@@ -36,6 +36,12 @@ func (s *Server) mountV0(r chi.Router) {
 		// Public signing key for verifying digest attestations.
 		r.Get("/signing-key", s.signingKey)
 
+		// Runtime export — render the catalog into control-plane config the
+		// in-cluster sync Jobs apply. agentgateway: all MCP servers → routing
+		// (AgentgatewayBackend + HTTPRoute). kagent export is per-agent, mounted
+		// in the collection route below.
+		r.Get("/export/agentgateway", s.v0ExportAgentgateway)
+
 		// Per-collection CRUD.
 		r.Route("/{plural}", func(r chi.Router) {
 			r.Get("/", s.v0List)
@@ -53,6 +59,9 @@ func (s *Server) mountV0(r chi.Router) {
 			// the runtime + the kagent/agentgateway export adapters.
 			r.Get("/{name}/resolved", s.v0AgentResolved)
 			r.Get("/{name}/{tag}/resolved", s.v0AgentResolvedTag)
+			// kagent export (Agent kind only): the agent + a ToolServer per
+			// resolved MCP dependency, as applyable kagent.dev YAML.
+			r.Get("/{name}/export/kagent", s.v0ExportKagent)
 			r.Get("/{name}/{tag}", s.v0Get)
 			r.Delete("/{name}/{tag}", s.v0Delete)
 		})

@@ -1,0 +1,115 @@
+package api
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/tesserix/agentic-registry/adapters/agentgateway"
+	"github.com/tesserix/agentic-registry/adapters/kagent"
+	"github.com/tesserix/agentic-registry/internal/auth"
+	"github.com/tesserix/agentic-registry/internal/store"
+	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
+)
+
+// Export endpoints render registry artifacts into runtime control-plane config
+// server-side (reusing the adapters/ packages), so an in-cluster sync Job can
+// `curl … | kubectl apply` without shipping the agentic CLI or re-implementing
+// the rendering. They are plain GETs under /v0, covered by the catalog read
+// authz the mesh already enforces.
+
+// v0ExportAgentgateway renders every MCP server in a namespace as agentgateway
+// routing config (AgentgatewayBackend + HTTPRoute) as one multi-doc YAML
+// stream. Query params:
+//
+//	namespace        registry namespace to read MCP servers from (default: DefaultNamespace)
+//	targetNamespace  namespace the rendered objects are created in (default: agentgateway-system)
+//	gateway          HTTPRoute parentRef gateway name (default: agentgateway)
+//	sandboxNamespace namespace image/package MCP servers run in (default: targetNamespace)
+func (s *Server) v0ExportAgentgateway(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = v1alpha1.DefaultNamespace
+	}
+	res, err := s.store.List(r.Context(), store.ListOptions{
+		Kind:       v1alpha1.KindMCPServer,
+		Namespace:  ns,
+		LatestOnly: true,
+		CanRead:    readPredicate(r),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	servers := make([]v1alpha1.Object, 0, len(res.Items))
+	for _, o := range res.Items {
+		servers = append(servers, s.withIdentity(o))
+	}
+	out, err := agentgateway.Build(servers, agentgateway.Options{
+		Namespace:        r.URL.Query().Get("targetNamespace"),
+		GatewayName:      r.URL.Query().Get("gateway"),
+		GatewayNamespace: r.URL.Query().Get("gatewayNamespace"),
+		SandboxNamespace: r.URL.Query().Get("sandboxNamespace"),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeYAML(w, out)
+}
+
+// v0ExportKagent renders one Agent as a kagent.dev Agent CR plus a ToolServer
+// per resolved MCP dependency. Mounted under the collection route; only valid
+// for the agents collection. Query params:
+//
+//	namespace      registry namespace the agent lives in (default: DefaultNamespace)
+//	targetNamespace namespace the kagent CRs are created in (default: kagent)
+//	modelConfig    kagent ModelConfig CR name the Agent references
+//	gatewayUrl     agentgateway base URL MCP tools are reached through
+func (s *Server) v0ExportKagent(w http.ResponseWriter, r *http.Request) {
+	kind, ok := s.kindFromPath(w, r)
+	if !ok {
+		return
+	}
+	if kind != v1alpha1.KindAgent {
+		writeErr(w, http.StatusBadRequest, "kagent export is only defined for agents")
+		return
+	}
+	ns := s.namespace(r)
+	name := chi.URLParam(r, "name")
+
+	agent, err := s.store.Get(r.Context(), kind, ns, name, "")
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	id := identity(r)
+	if !auth.CanRead(id, agent) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	agent = s.withIdentity(agent)
+	resolved, _ := s.resolveAgentRefs(r.Context(), id, agent)
+
+	out, err := kagent.Build(agent, resolved["mcpServers"], kagent.Options{
+		Namespace:      r.URL.Query().Get("targetNamespace"),
+		ModelConfigRef: r.URL.Query().Get("modelConfig"),
+		GatewayURL:     r.URL.Query().Get("gatewayUrl"),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeYAML(w, out)
+}
+
+func writeYAML(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/yaml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
