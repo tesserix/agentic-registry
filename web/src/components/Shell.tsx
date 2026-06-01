@@ -126,7 +126,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
               className="w-1.5 h-1.5 rounded-full"
               style={{ background: health?.status === "ok" ? "var(--ok)" : "var(--error)" }}
             />
-            {health ? `${health.platform} · ${health.version}` : "offline"}
+            {health ? [health.platform, health.version].filter(Boolean).join(" · ") || health.status : "offline"}
           </div>
         </div>
       </aside>

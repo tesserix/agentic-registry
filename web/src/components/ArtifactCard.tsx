@@ -11,7 +11,7 @@ export default function ArtifactCard({ plural, a }: { plural: string; a: Artifac
 
   return (
     <Link
-      to={`/${plural}/${encodeURIComponent(a.metadata.name)}`}
+      to={`/${plural}/${encodeURIComponent(a.metadata.name)}${a.metadata.namespace ? `?namespace=${encodeURIComponent(a.metadata.namespace)}` : ""}`}
       className="card card-link p-5 flex flex-col gap-3"
       style={{ textDecoration: "none" }}
     >

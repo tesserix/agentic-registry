@@ -1,5 +1,5 @@
 import { useEffect, useState, lazy, Suspense } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useSearchParams, Link } from "react-router-dom";
 import { ArrowLeft, Loader2, Tag, ShieldCheck, ShieldAlert, Copy, Check, Fingerprint, Pencil, History } from "lucide-react";
 import { api, KINDS, type Artifact, type Revision, visibilityClass, userLabels } from "../lib/api";
 import { verifyEd25519 } from "../lib/verify";
@@ -15,6 +15,11 @@ interface Version {
 
 export default function ArtifactDetail() {
   const { plural = "skills", name = "" } = useParams();
+  // Artifacts live in a namespace (often not "default" — e.g. "devai"). The
+  // catalog list browses every readable namespace and carries the namespace in
+  // the link query, so honour it here; fall back to "default" for direct links.
+  const [searchParams] = useSearchParams();
+  const namespace = searchParams.get("namespace") || "default";
   const meta = KINDS.find((k) => k.plural === plural) ?? KINDS[0];
 
   const [a, setA] = useState<Artifact | null>(null);
@@ -28,15 +33,15 @@ export default function ArtifactDetail() {
     setError(null);
     setA(null);
     setVersions([]);
-    api.get(plural, name).then(setA).catch((e) => setError(String(e.message ?? e)));
+    api.get(plural, name, namespace).then(setA).catch((e) => setError(String(e.message ?? e)));
     // Versions table with per-version fingerprints.
     api
-      .tags(plural, name)
+      .tags(plural, name, namespace)
       .then(async (t) => {
         const rows = await Promise.all(
           t.tags.map(async (tag) => {
             try {
-              const o = await api.getVersion(plural, name, tag);
+              const o = await api.getVersion(plural, name, tag, namespace);
               return { tag, digest: o.metadata.digest, updatedAt: o.metadata.updatedAt };
             } catch {
               return { tag };
@@ -46,8 +51,8 @@ export default function ArtifactDetail() {
         setVersions(rows);
       })
       .catch(() => setVersions([]));
-    api.revisions(plural, name).then(setRevisions).catch(() => setRevisions([]));
-  }, [plural, name, reload]);
+    api.revisions(plural, name, namespace).then(setRevisions).catch(() => setRevisions([]));
+  }, [plural, name, namespace, reload]);
 
   if (error) {
     return (

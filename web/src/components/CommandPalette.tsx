@@ -57,6 +57,7 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
         kind: "artifact" as const,
         plural: pluralForKind(a.kind),
         name: a.metadata.name,
+        namespace: a.metadata.namespace,
         title: (a.spec?.title as string) || a.metadata.name,
         sub: a.kind,
       }));
@@ -65,6 +66,7 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
       kind: "section" as const,
       plural: k.plural,
       name: k.label,
+      namespace: undefined as string | undefined,
       title: `Browse ${k.label}`,
       sub: "Catalog",
     }));
@@ -77,7 +79,7 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
     if (!row) return;
     onClose();
     if (row.kind === "section") navigate(`/${row.plural}`);
-    else navigate(`/${row.plural}/${encodeURIComponent(row.name)}`);
+    else navigate(`/${row.plural}/${encodeURIComponent(row.name)}${row.namespace ? `?namespace=${encodeURIComponent(row.namespace)}` : ""}`);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
