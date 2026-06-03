@@ -62,7 +62,7 @@ export function pluralForKind(kind: string): string {
 
 const BASE = import.meta.env.VITE_API_BASE ?? "";
 
-async function get<T>(path: string): Promise<T> {
+async function getRaw(path: string): Promise<Response> {
   const res = await fetch(`${BASE}${path}`, { headers: { Accept: "application/json" } });
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
@@ -74,7 +74,24 @@ async function get<T>(path: string): Promise<T> {
     }
     throw new Error(msg);
   }
-  return res.json() as Promise<T>;
+  return res;
+}
+
+async function get<T>(path: string): Promise<T> {
+  return (await getRaw(path)).json() as Promise<T>;
+}
+
+// A single page of a collection plus the opaque cursor for the next page
+// (read from the X-Next-Cursor response header; absent when fully drained).
+export interface Page<T> {
+  items: T[];
+  nextCursor?: string;
+}
+
+async function getPage<T>(path: string): Promise<Page<T>> {
+  const res = await getRaw(path);
+  const items = (await res.json()) as T[];
+  return { items, nextCursor: res.headers.get("X-Next-Cursor") || undefined };
 }
 
 export interface Health {
@@ -93,6 +110,24 @@ export const api = {
     if (opts.search) q.set("search", opts.search);
     const qs = q.toString();
     return get<Artifact[]>(`/v0/${plural}${qs ? `?${qs}` : ""}`);
+  },
+
+  // Cursor-paginated variant of list(): returns one page of items plus the
+  // cursor for the next page. Pass that cursor back to fetch the following
+  // page; an absent cursor means the collection is exhausted. Used by the
+  // catalog's infinite scroll.
+  listPage: (
+    plural: string,
+    opts: { namespace?: string; labelSelector?: string; search?: string; limit?: number; cursor?: string } = {},
+  ): Promise<Page<Artifact>> => {
+    const q = new URLSearchParams();
+    if (opts.namespace) q.set("namespace", opts.namespace);
+    if (opts.labelSelector) q.set("labelSelector", opts.labelSelector);
+    if (opts.search) q.set("search", opts.search);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    const qs = q.toString();
+    return getPage<Artifact>(`/v0/${plural}${qs ? `?${qs}` : ""}`);
   },
 
   // Global, cross-kind ranked search (pgvector cosine when available).

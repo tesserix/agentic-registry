@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { parse as parseYAML } from "yaml";
 import { Search, SlidersHorizontal, Loader2, PackageOpen, Plus, Upload } from "lucide-react";
@@ -7,6 +7,11 @@ import ArtifactCard from "../components/ArtifactCard";
 import ArtifactEditor from "../components/ArtifactEditor";
 
 type Doc = Record<string, unknown>;
+
+// How many artifacts to request per page. The catalog grows this list as the
+// user scrolls (infinite scroll) rather than loading the whole collection up
+// front.
+const PAGE_SIZE = 30;
 
 // Parse an uploaded manifest: JSON by extension/content, otherwise YAML.
 function parseManifest(name: string, text: string): Doc {
@@ -21,7 +26,9 @@ export default function Catalog() {
   const meta = KINDS.find((k) => k.plural === plural) ?? KINDS[0];
 
   const [items, setItems] = useState<Artifact[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true); // first page (resets the grid)
+  const [loadingMore, setLoadingMore] = useState(false); // appending a page
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [labelSelector, setLabelSelector] = useState("");
@@ -30,6 +37,10 @@ export default function Catalog() {
   const [uploadErr, setUploadErr] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // Guards against firing a second "load more" before the first resolves
+  // (the observer can re-trigger while the request is still in flight).
+  const loadingMoreRef = useRef(false);
 
   // Direct upload from the header: parse the file, then open the editor
   // pre-filled so the user can review/adjust before publishing.
@@ -47,25 +58,77 @@ export default function Catalog() {
     }
   }
 
+  // First page: (re)load whenever the collection, query or filters change.
+  // Debounced so typing in the search/label box doesn't fire a request per
+  // keystroke. Resets the grid and the pagination cursor.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    api
-      .list(plural, { search, labelSelector: labelSelector.trim() || undefined })
-      .then((data) => {
-        if (!cancelled) setItems(data);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(String(e.message ?? e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    const t = setTimeout(() => {
+      api
+        .listPage(plural, {
+          search,
+          labelSelector: labelSelector.trim() || undefined,
+          limit: PAGE_SIZE,
+        })
+        .then((page) => {
+          if (cancelled) return;
+          setItems(page.items);
+          setNextCursor(page.nextCursor ?? null);
+        })
+        .catch((e) => {
+          if (!cancelled) setError(String(e.message ?? e));
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }, 200);
     return () => {
       cancelled = true;
+      clearTimeout(t);
     };
   }, [plural, search, labelSelector, reload]);
+
+  // Append the next page using the cursor from the previous response. The
+  // current search/label filters are carried forward so pagination stays
+  // scoped to the active query.
+  const loadMore = useCallback(() => {
+    if (loadingMoreRef.current || !nextCursor) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    api
+      .listPage(plural, {
+        search,
+        labelSelector: labelSelector.trim() || undefined,
+        limit: PAGE_SIZE,
+        cursor: nextCursor,
+      })
+      .then((page) => {
+        setItems((prev) => [...prev, ...page.items]);
+        setNextCursor(page.nextCursor ?? null);
+      })
+      .catch((e) => setError(String(e.message ?? e)))
+      .finally(() => {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      });
+  }, [plural, search, labelSelector, nextCursor]);
+
+  // Infinite scroll: trigger loadMore when the sentinel below the grid scrolls
+  // near the viewport. rootMargin pre-fetches before it's fully visible.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !nextCursor) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { rootMargin: "600px" },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [nextCursor, loadMore]);
 
   const count = useMemo(() => items.length, [items]);
 
@@ -78,7 +141,8 @@ export default function Catalog() {
         </h1>
         <div className="flex items-center gap-3 flex-wrap sm:pb-1">
           <span className="font-mono text-[12px]" style={{ color: "var(--ink-muted)" }}>
-            {count} {count === 1 ? "artifact" : "artifacts"}
+            {count}
+            {nextCursor ? "+" : ""} {count === 1 ? "artifact" : "artifacts"}
           </span>
           <input
             ref={fileInput}
@@ -155,11 +219,30 @@ export default function Catalog() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-            {items.map((a) => (
-              <ArtifactCard key={`${a.metadata.namespace}/${a.metadata.name}`} plural={plural} a={a} />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+              {items.map((a) => (
+                <ArtifactCard key={`${a.metadata.namespace}/${a.metadata.name}`} plural={plural} a={a} />
+              ))}
+            </div>
+            {/* Sentinel + manual fallback for fetching the next page. The
+                IntersectionObserver loads more on scroll; the button covers
+                cases where the sentinel never enters the viewport (e.g. a
+                short page) or the observer is unavailable. */}
+            {nextCursor && (
+              <div ref={sentinelRef} className="flex justify-center py-8">
+                {loadingMore ? (
+                  <span className="flex items-center gap-2 text-[13px]" style={{ color: "var(--ink-muted)" }}>
+                    <Loader2 className="w-4 h-4 spin" /> loading more…
+                  </span>
+                ) : (
+                  <button className="btn-secondary" onClick={loadMore}>
+                    Load more
+                  </button>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
 

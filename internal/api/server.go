@@ -145,6 +145,10 @@ func (s *Server) cors(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				// X-Next-Cursor carries the pagination cursor; without this a
+				// cross-origin browser caller can't read it (custom response
+				// headers are hidden from JS unless explicitly exposed).
+				w.Header().Set("Access-Control-Expose-Headers", "X-Next-Cursor")
 			}
 		}
 		if r.Method == http.MethodOptions {
