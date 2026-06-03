@@ -30,10 +30,6 @@ type Config struct {
 	GroupsClaim  string // JWT claim carrying group/role membership
 	TrustedProxy bool   // trust X-Forwarded-* identity headers
 
-	// Multitenancy: when false, the default namespace/tenant is hidden on the
-	// wire so the registry "feels" single-tenant until deliberately enabled.
-	MultiTenant bool
-
 	// CORS allowed origins for the marketplace UI (comma-separated).
 	CORSOrigins []string
 
@@ -85,7 +81,6 @@ func Load() Config {
 		AuthAudience:  env("AUTH_AUDIENCE", ""),
 		GroupsClaim:   env("AUTH_GROUPS_CLAIM", "groups"),
 		TrustedProxy:  env("AUTH_TRUSTED_PROXY", "false") == "true",
-		MultiTenant:   env("MULTI_TENANT", "false") == "true",
 		PublicBaseURL: env("PUBLIC_BASE_URL", "http://localhost:8080"),
 		WebDir:        env("WEB_DIR", ""),
 		SeedExamples:  env("SEED_EXAMPLES", "false") == "true",
