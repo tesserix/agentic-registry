@@ -37,6 +37,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v6
+        with:
+          # working-directory applies only to run: steps, so point the action
+          # at web/package.json explicitly to pick up packageManager pnpm@11.4.0.
+          package_json_file: web/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
