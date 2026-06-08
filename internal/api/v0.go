@@ -324,6 +324,12 @@ func (s *Server) applyOne(w http.ResponseWriter, r *http.Request, obj v1alpha1.O
 		return
 	}
 	result, created, err := s.store.Apply(r.Context(), obj)
+	if errors.Is(err, store.ErrTenantConflict) {
+		// A different tenant owns this (kind,namespace,name,tag); refuse to let
+		// the upsert reassign ownership.
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
 	if errors.Is(err, store.ErrImmutableTag) || errors.Is(err, store.ErrNameConflict) {
 		// 409 with the full reason: which name/namespace collided and which
 		// kind + ARN already owns it, so the publisher knows exactly why.
@@ -370,6 +376,11 @@ func (s *Server) v0Apply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if len(objs) > maxApplyDocs {
+		writeErr(w, http.StatusRequestEntityTooLarge,
+			"too many documents in one apply: limit is "+strconv.Itoa(maxApplyDocs))
+		return
+	}
 	id := identity(r)
 	type applied struct {
 		Kind      v1alpha1.Kind `json:"kind"`
@@ -414,6 +425,11 @@ func (s *Server) v0DeleteApply(w http.ResponseWriter, r *http.Request) {
 	objs, err := decodeMultiDoc(r.Body)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(objs) > maxApplyDocs {
+		writeErr(w, http.StatusRequestEntityTooLarge,
+			"too many documents in one apply: limit is "+strconv.Itoa(maxApplyDocs))
 		return
 	}
 	id := identity(r)

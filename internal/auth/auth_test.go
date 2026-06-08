@@ -3,6 +3,7 @@ package auth
 import (
 	"testing"
 
+	"github.com/tesserix/agentic-registry/internal/config"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
 
@@ -67,5 +68,56 @@ func TestUnscopedGroupTokenStillWorks(t *testing.T) {
 	groupAdmin := Identity{Authenticated: true, TenantID: "acme", Groups: []string{"registry:admin"}}
 	if !CanWrite(groupAdmin, o) {
 		t.Fatal("unscoped group admin must retain write (backward compat)")
+	}
+}
+
+// TestAnonymousDefaultIsAdmin asserts the default no-auth posture is UNCHANGED:
+// an anonymous caller (empty AUTH_ANONYMOUS_ROLE) still gets registry:admin and
+// can write. This is the behavior-neutrality guard for CODE-24.
+func TestAnonymousDefaultIsAdmin(t *testing.T) {
+	a, err := New(config.Config{AuthMode: "anonymous"})
+	if err != nil {
+		t.Fatalf("anonymous default must build: %v", err)
+	}
+	id := a.Identify(nil)
+	// A private artifact in the anonymous tenant must be writable (current behavior).
+	o := obj(v1alpha1.VisibilityPrivate, v1alpha1.DefaultNamespace)
+	if !CanWrite(id, o) {
+		t.Fatal("default anonymous role must remain admin (writable) for behavior neutrality")
+	}
+}
+
+// TestAnonymousReadRoleFailsClosedOnWrite asserts the opt-in downgrade works:
+// AUTH_ANONYMOUS_ROLE=read keeps public reads but makes writes fail closed.
+func TestAnonymousReadRoleFailsClosedOnWrite(t *testing.T) {
+	a, err := New(config.Config{AuthMode: "anonymous", AnonymousRole: "read"})
+	if err != nil {
+		t.Fatalf("anonymous read must build: %v", err)
+	}
+	id := a.Identify(nil)
+	o := obj(v1alpha1.VisibilityPrivate, v1alpha1.DefaultNamespace)
+	if CanWrite(id, o) {
+		t.Fatal("downgraded anonymous (read) must not be able to write")
+	}
+	// Public reads still work.
+	if !CanRead(id, obj(v1alpha1.VisibilityPublic, v1alpha1.DefaultNamespace)) {
+		t.Fatal("downgraded anonymous must still read public artifacts")
+	}
+}
+
+func TestAnonymousInvalidRoleRejected(t *testing.T) {
+	if _, err := New(config.Config{AuthMode: "anonymous", AnonymousRole: "superuser"}); err == nil {
+		t.Fatal("invalid AUTH_ANONYMOUS_ROLE must be rejected")
+	}
+}
+
+// TestTrustedHeaderRequiresTrustedProxy asserts the mode refuses to start unless
+// AUTH_TRUSTED_PROXY is set (it was previously dead config).
+func TestTrustedHeaderRequiresTrustedProxy(t *testing.T) {
+	if _, err := New(config.Config{AuthMode: "trusted-header"}); err == nil {
+		t.Fatal("trusted-header must refuse to start without AUTH_TRUSTED_PROXY=true")
+	}
+	if _, err := New(config.Config{AuthMode: "trusted-header", TrustedProxy: true}); err != nil {
+		t.Fatalf("trusted-header with AUTH_TRUSTED_PROXY=true must build: %v", err)
 	}
 }

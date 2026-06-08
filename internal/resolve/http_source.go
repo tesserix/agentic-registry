@@ -30,7 +30,17 @@ func NewHTTPSource(name, urlTmpl string) Source {
 	return &httpSource{
 		name:    name,
 		urlTmpl: urlTmpl,
-		client:  &http.Client{Timeout: 10 * time.Second},
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+			// SSRF hardening: refuse to follow redirects. A configured upstream
+			// catalog is trusted, but a 3xx from it could point the client at an
+			// arbitrary (e.g. internal/metadata) URL. http.ErrUseLastResponse
+			// returns the redirect response itself instead of following it; the
+			// non-200 status then maps to an error in Resolve.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 

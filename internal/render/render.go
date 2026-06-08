@@ -4,8 +4,13 @@
 // object and then sends it to whatever gateway/provider it wants. The registry
 // never proxies the LLM call.
 //
-// Templating is logic-less Mustache so tenant-authored templates cannot execute
-// arbitrary logic — important for a multi-tenant, self-hosted registry.
+// Templating is logic-less Mustache so tenant-authored templates can interpolate
+// variables but cannot run code. They CAN, however, request partials with the
+// `{{> name}}` tag; by default cbroglie/mustache resolves those off the local
+// filesystem, which would let a tenant template read arbitrary files (LFI) via
+// `{{> /etc/hostname}}`. We therefore render every template through an empty
+// StaticProvider so a partial tag resolves to nothing instead of touching disk —
+// important for a multi-tenant, self-hosted registry.
 package render
 
 import (
@@ -36,15 +41,40 @@ type Rendered struct {
 	Tools    []interface{}          `json:"tools,omitempty"`
 }
 
+// noPartials is a shared, empty partial provider. Rendering through it makes a
+// `{{> path}}` partial tag resolve to "" instead of being read off the local
+// filesystem, closing the local-file-inclusion vector for tenant-authored
+// templates. It is stateless and safe to share across calls.
+var noPartials = &mustache.StaticProvider{}
+
+// renderTemplate interpolates a logic-less Mustache template against vars with
+// filesystem partials disabled (see noPartials).
+func renderTemplate(tmpl string, vars map[string]interface{}) (string, error) {
+	return mustache.RenderPartials(tmpl, noPartials, vars)
+}
+
+// promptBody returns the single-string prompt body from spec, accepting either
+// "content" or "template" (synonyms). Seeded/authored Prompts use spec.template;
+// without this, every such Prompt rendered 400 ("neither messages[] nor content").
+func promptBody(spec map[string]interface{}) (string, bool) {
+	for _, k := range []string{"content", "template"} {
+		if s, ok := spec[k].(string); ok {
+			return s, true
+		}
+	}
+	return "", false
+}
+
 // Prompt renders obj.spec against the request variables.
 //
-// Expected Prompt spec shape (all optional except messages or content):
+// Expected Prompt spec shape (all optional except messages or content/template):
 //
 //	spec:
 //	  model: "claude-opus-4-8"
 //	  messages: [{role: system, content: "You are {{persona}}."}]
-//	  # OR a single inline string:
+//	  # OR a single inline string (content and template are synonyms):
 //	  content: "Summarize {{topic}}."
+//	  template: "Summarize {{topic}}."
 //	  params: {temperature: 0.2}
 //	  tools: [...]
 func Prompt(obj v1alpha1.Object, req Request) (Rendered, error) {
@@ -72,20 +102,20 @@ func Prompt(obj v1alpha1.Object, req Request) (Rendered, error) {
 			}
 			role, _ := msg["role"].(string)
 			content, _ := msg["content"].(string)
-			rendered, err := mustache.Render(content, vars)
+			rendered, err := renderTemplate(content, vars)
 			if err != nil {
 				return Rendered{}, err
 			}
 			out.Messages = append(out.Messages, Message{Role: role, Content: rendered})
 		}
-	} else if content, ok := spec["content"].(string); ok {
-		rendered, err := mustache.Render(content, vars)
+	} else if content, ok := promptBody(spec); ok {
+		rendered, err := renderTemplate(content, vars)
 		if err != nil {
 			return Rendered{}, err
 		}
 		out.Messages = append(out.Messages, Message{Role: "user", Content: rendered})
 	} else {
-		return Rendered{}, fmt.Errorf("prompt spec has neither messages[] nor content")
+		return Rendered{}, fmt.Errorf("prompt spec has neither messages[] nor content/template")
 	}
 
 	if params, ok := spec["params"].(map[string]interface{}); ok {

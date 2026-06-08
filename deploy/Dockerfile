@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # ---- build the web UI ------------------------------------------------------
-FROM ghcr.io/tesserix/base-node-builder-22:latest AS web
+# CHART-11: pin the tesserix base images by digest. The :latest tags are
+# mutable, so an unpinned build is not reproducible; publish immutable
+# date/sha tags upstream and bump these digests deliberately.
+FROM ghcr.io/tesserix/base-node-builder-22:latest@sha256:6f10117e2d506e2ddc99b2daeecc854a24ab4b8fc0cbcbcfc2c7f4eedc0e7e1f AS web
 USER 0:0
 # CI=true lets pnpm reconcile/purge node_modules non-interactively (no TTY in
 # the build), e.g. when the lockfile changed since a cached install layer.
@@ -14,7 +17,8 @@ COPY web/ ./
 RUN pnpm build
 
 # ---- build the Go server (static binary) -----------------------------------
-FROM ghcr.io/tesserix/base-go-builder:latest AS build
+# CHART-11: pin by digest (see note above).
+FROM ghcr.io/tesserix/base-go-builder:latest@sha256:2f09058d025b7e8760f057fcdac047116e2d728e6e85cf9fcd6dc5a80d7be57f AS build
 USER 0:0
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -32,7 +36,8 @@ RUN addgroup -g 1000 aregistry \
     && adduser -u 1000 -G aregistry -D -H aregistry
 
 # ---- final: distroless static ----------------------------------------------
-FROM ghcr.io/tesserix/base-distroless-static:latest
+# CHART-11: pin by digest (see note above).
+FROM ghcr.io/tesserix/base-distroless-static:latest@sha256:42437f81b48f5330ba22207ccdd98a63a86347882b227ae177d9714e12c751cf
 WORKDIR /app
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build --chown=aregistry:aregistry /out/agentic-registry /app/agentic-registry

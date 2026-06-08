@@ -7,6 +7,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -91,9 +92,9 @@ func New(cfg config.Config) (Authenticator, error) {
 	case "jwks":
 		return newJWKSAuthenticator(cfg)
 	case "trusted-header":
-		return trustedHeaderAuth{groupsClaim: cfg.GroupsClaim}, nil
+		return newTrustedHeaderAuth(cfg)
 	default: // "anonymous"
-		return anonymousAuth{}, nil
+		return newAnonymousAuth(cfg)
 	}
 }
 
@@ -110,19 +111,64 @@ func Middleware(a Authenticator) func(http.Handler) http.Handler {
 
 // ---- anonymous (local/dev) -------------------------------------------------
 
-// anonymousAuth is the local/dev mode: NO auth is configured, so the registry
-// runs single-user with full access (matching solo aregistry's local daemon).
-// It grants the registry:admin group so publish/delete work without a token.
-// Production deployments use the "jwks" or "trusted-header" modes instead.
-type anonymousAuth struct{}
+// anonymousAuth is the no-auth mode: NO auth provider is configured, so every
+// request is treated as the same local identity.
+//
+// The role granted to that identity is configurable (AUTH_ANONYMOUS_ROLE):
+//   - "admin" (DEFAULT): grants the registry:admin group so publish/delete work
+//     without a token — matches solo aregistry's local daemon and the in-cluster
+//     bootstrap/seed write path (which arrives over a mesh-trusted SA).
+//   - "read": grants no write groups and no read scope-elevation, so anonymous
+//     callers can read public artifacts but every write fails closed. Recommended
+//     hardening for shared deployments; the actual flip happens in chart values,
+//     paired with the mesh DENY policy that confines writes to trusted SAs.
+//
+// The default is "admin" precisely to preserve existing runtime behavior.
+type anonymousAuth struct {
+	role Role
+}
 
-func (anonymousAuth) Identify(*http.Request) Identity {
-	return Identity{
+func newAnonymousAuth(cfg config.Config) (Authenticator, error) {
+	r, err := parseAnonymousRole(cfg.AnonymousRole)
+	if err != nil {
+		return nil, err
+	}
+	return anonymousAuth{role: r}, nil
+}
+
+// parseAnonymousRole maps the configured AUTH_ANONYMOUS_ROLE to a Role. An empty
+// value defaults to admin (preserving current behavior).
+func parseAnonymousRole(s string) (Role, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "admin":
+		return RoleAdmin, nil
+	case "read", "reader", "readonly", "read-only":
+		return RoleRead, nil
+	case "write", "writer":
+		return RoleWrite, nil
+	default:
+		return RoleNone, fmt.Errorf("invalid AUTH_ANONYMOUS_ROLE %q (want admin|write|read)", s)
+	}
+}
+
+func (a anonymousAuth) Identify(*http.Request) Identity {
+	id := Identity{
 		Subject:       "local",
 		TenantID:      v1alpha1.DefaultNamespace,
-		Groups:        []string{"registry:admin"},
 		Authenticated: true,
 	}
+	// Admin keeps the registry:admin group (full access, current behavior). A
+	// downgraded anonymous identity carries no write-granting group, so RoleFor
+	// resolves to at most read on the local tenant and CanWrite fails closed.
+	switch a.role {
+	case RoleAdmin:
+		id.Groups = []string{"registry:admin"}
+	case RoleWrite:
+		id.Groups = []string{v1alpha1.DefaultNamespace + ":writer"}
+	default: // RoleRead
+		id.Groups = []string{v1alpha1.DefaultNamespace + ":reader"}
+	}
+	return id
 }
 
 // ---- trusted header (behind a gateway) -------------------------------------
@@ -132,6 +178,22 @@ func (anonymousAuth) Identify(*http.Request) Identity {
 // gateway (enforced by mTLS / NetworkPolicy). Otherwise a client could forge
 // the headers.
 type trustedHeaderAuth struct{ groupsClaim string }
+
+// newTrustedHeaderAuth builds the trusted-header authenticator, refusing to
+// start unless AUTH_TRUSTED_PROXY is explicitly set. Trusting X-Forwarded-*
+// identity headers is only safe when the registry is reachable solely via the
+// gateway that sets them; AUTH_TRUSTED_PROXY=true is the operator's affirmation
+// that this network containment is in place. Previously this flag was dead
+// config, so the mode trusted forgeable headers with no opt-in.
+func newTrustedHeaderAuth(cfg config.Config) (Authenticator, error) {
+	if !cfg.TrustedProxy {
+		return nil, fmt.Errorf(
+			"AUTH_MODE=trusted-header requires AUTH_TRUSTED_PROXY=true: only enable it when the " +
+				"registry is reachable solely via the identity-setting gateway (mTLS/NetworkPolicy), " +
+				"otherwise X-Forwarded-* identity headers can be forged")
+	}
+	return trustedHeaderAuth{groupsClaim: cfg.GroupsClaim}, nil
+}
 
 func (t trustedHeaderAuth) Identify(r *http.Request) Identity {
 	sub := r.Header.Get("X-Forwarded-User")

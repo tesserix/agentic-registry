@@ -105,6 +105,13 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_embedding
     ON registry.artifacts USING hnsw (embedding vector_cosine_ops);
 `, embed.Dim)
 
+// maxScanRows caps how many candidate rows a single List query materializes
+// before the in-Go discovery pipeline (RBAC pre-filter → selector → collapse →
+// paginate) runs. It is a memory safety ceiling, deliberately far above any
+// realistic page or per-namespace count, replacing the unbounded 1<<30 sentinel
+// callers used to pass for "all".
+const maxScanRows = 100000
+
 // Postgres is the production Store backed by PostgreSQL. spec/status/labels are
 // JSONB; identity and scope are promoted to real columns and GIN-indexed.
 type Postgres struct {
@@ -220,7 +227,10 @@ func vecLiteral(v []float32) string {
 func (p *Postgres) Apply(ctx context.Context, obj v1alpha1.Object) (v1alpha1.Object, bool, error) {
 	obj = obj.Normalized()
 	status := map[string]interface{}{"status": "active"}
-	statusJSON, _ := json.Marshal(status)
+	statusJSON, err := json.Marshal(status)
+	if err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: marshal status: %w", err)
+	}
 	uid := uuid.NewString()
 
 	// Everything runs in one transaction: auto-versioning, the immutability
@@ -283,22 +293,40 @@ func (p *Postgres) Apply(ctx context.Context, obj v1alpha1.Object) (v1alpha1.Obj
 
 	// Content hash depends on the (now-resolved) tag.
 	hash := obj.ContentHash()
-	labels, _ := json.Marshal(obj.Metadata.Labels)
-	annos, _ := json.Marshal(obj.Metadata.Annotations)
-	spec, _ := json.Marshal(orEmpty(obj.Spec))
+	labels, err := json.Marshal(obj.Metadata.Labels)
+	if err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: marshal labels: %w", err)
+	}
+	annos, err := json.Marshal(obj.Metadata.Annotations)
+	if err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: marshal annotations: %w", err)
+	}
+	spec, err := json.Marshal(orEmpty(obj.Spec))
+	if err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: marshal spec: %w", err)
+	}
 
-	// Lock the (maybe-existing) row and read its current content hash.
-	var existingHash string
+	// Lock the (maybe-existing) row and read its current content hash + owner.
+	var existingHash, existingTenant string
 	hasExisting := true
 	err = tx.QueryRow(ctx,
-		`SELECT content_hash FROM registry.artifacts
+		`SELECT content_hash, tenant_id FROM registry.artifacts
 		 WHERE kind=$1 AND namespace=$2 AND name=$3 AND tag=$4 FOR UPDATE`,
 		string(obj.Kind), obj.Metadata.Namespace, obj.Metadata.Name, obj.Metadata.Tag,
-	).Scan(&existingHash)
+	).Scan(&existingHash, &existingTenant)
 	if errors.Is(err, pgx.ErrNoRows) {
 		hasExisting = false
 	} else if err != nil {
 		return v1alpha1.Object{}, false, fmt.Errorf("postgres: apply read: %w", err)
+	}
+
+	// Cross-tenant overwrite guard: the ON CONFLICT upsert reassigns tenant_id/
+	// visibility to the incoming object, so without this a writer on tenant B
+	// could hijack tenant A's same-(kind,namespace,name,tag) artifact. Reject
+	// when the existing row is owned by a different tenant; re-applying to your
+	// own tenant's artifact is normal versioning and proceeds.
+	if hasExisting && existingTenant != obj.Metadata.TenantID {
+		return v1alpha1.Object{}, false, ErrTenantConflict
 	}
 
 	// Immutable version tags: refuse to change a published version's content
@@ -453,7 +481,14 @@ func (p *Postgres) List(ctx context.Context, opts ListOptions) (ListResult, erro
 		opts.PreRanked = true
 	}
 
-	q := "SELECT " + cols + " FROM registry.artifacts WHERE " + where + orderBy
+	// Bound the candidate scan in SQL. The RBAC/selector pre-filter and the exact
+	// cursor pagination still run in the Go pipeline (page()), so SQL can't be the
+	// precise page boundary — but materializing every row (the previous behavior,
+	// driven by callers passing Limit=1<<30) is an unbounded-memory DoS on a large
+	// catalog. maxScanRows is a hard ceiling far above any realistic page so it
+	// never clips a real result set while capping worst-case memory.
+	q := "SELECT " + cols + " FROM registry.artifacts WHERE " + where + orderBy +
+		fmt.Sprintf(" LIMIT %d", maxScanRows)
 	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
 		return ListResult{}, fmt.Errorf("postgres: list: %w", err)
@@ -509,7 +544,10 @@ func (p *Postgres) SetStatus(ctx context.Context, kind v1alpha1.Kind, ns, name, 
 		q += `, deletion_timestamp = now()`
 	}
 	q += ` WHERE kind=$1 AND namespace=$2 AND name=$3 AND tag=$4`
-	statusJSON, _ := json.Marshal(status)
+	statusJSON, err := json.Marshal(status)
+	if err != nil {
+		return fmt.Errorf("postgres: marshal status: %w", err)
+	}
 	ct, err := p.pool.Exec(ctx, q, string(kind), ns, name, tag, statusJSON)
 	if err != nil {
 		return err
@@ -523,7 +561,10 @@ func (p *Postgres) SetStatus(ctx context.Context, kind v1alpha1.Kind, ns, name, 
 func (p *Postgres) Counts(ctx context.Context, ns string, canRead func(v1alpha1.Object) bool) (map[v1alpha1.Kind]int, error) {
 	counts := map[v1alpha1.Kind]int{}
 	for _, k := range v1alpha1.AllKinds {
-		r, err := p.List(ctx, ListOptions{Kind: k, Namespace: ns, LatestOnly: true, CanRead: canRead, Limit: 1 << 30})
+		// Count every readable latest artifact of this kind: List bounds the SQL
+		// scan at maxScanRows internally, and we ask the pipeline for the full
+		// (bounded) set rather than a single page so the count isn't truncated.
+		r, err := p.List(ctx, ListOptions{Kind: k, Namespace: ns, LatestOnly: true, CanRead: canRead, Limit: maxScanRows})
 		if err != nil {
 			return nil, err
 		}
@@ -584,10 +625,23 @@ func scanRows(rows pgx.Rows) ([]v1alpha1.Object, error) {
 		if teamID != nil {
 			o.Metadata.TeamID = *teamID
 		}
-		_ = json.Unmarshal(labels, &o.Metadata.Labels)
-		_ = json.Unmarshal(annos, &o.Metadata.Annotations)
-		_ = json.Unmarshal(spec, &o.Spec)
-		_ = json.Unmarshal(statusRaw, &o.Status)
+		// Propagate JSONB unmarshal errors instead of silently dropping the
+		// labels/annotations/spec/status — a swallowed error here is silent data
+		// loss (an artifact served with an empty spec, etc.). The column type is
+		// jsonb so a decode failure means real corruption worth surfacing.
+		ref := o.Metadata.Namespace + "/" + o.Metadata.Name
+		if err := json.Unmarshal(labels, &o.Metadata.Labels); err != nil {
+			return nil, fmt.Errorf("postgres: unmarshal labels for %s: %w", ref, err)
+		}
+		if err := json.Unmarshal(annos, &o.Metadata.Annotations); err != nil {
+			return nil, fmt.Errorf("postgres: unmarshal annotations for %s: %w", ref, err)
+		}
+		if err := json.Unmarshal(spec, &o.Spec); err != nil {
+			return nil, fmt.Errorf("postgres: unmarshal spec for %s: %w", ref, err)
+		}
+		if err := json.Unmarshal(statusRaw, &o.Status); err != nil {
+			return nil, fmt.Errorf("postgres: unmarshal status for %s: %w", ref, err)
+		}
 		o.Metadata.CreatedAt = &createdAt
 		o.Metadata.UpdatedAt = &updatedAt
 		o.Metadata.DeletionTimestamp = deletedAt

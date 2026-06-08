@@ -29,6 +29,13 @@ type Config struct {
 	AuthAudience string // expected "aud" claim (optional)
 	GroupsClaim  string // JWT claim carrying group/role membership
 	TrustedProxy bool   // trust X-Forwarded-* identity headers
+	// AnonymousRole is the effective role granted to anonymous (no-auth-mode)
+	// callers: "admin" (current/default behavior — full read+write, what local
+	// dev and the in-cluster bootstrap SA rely on) or "read" (read-only;
+	// recommended hardening once writes arrive only via a mesh-trusted identity).
+	// DEFAULT is "admin" to preserve existing behavior; the flip to "read" is a
+	// deliberate chart-values change made later, paired with the mesh DENY policy.
+	AnonymousRole string
 
 	// CORS allowed origins for the marketplace UI (comma-separated).
 	CORSOrigins []string
@@ -72,15 +79,18 @@ type Config struct {
 
 func Load() Config {
 	c := Config{
-		Addr:          env("ADDR", ":8080"),
-		StoreBackend:  env("STORE_BACKEND", "memory"),
-		DatabaseURL:   env("DATABASE_URL", ""),
-		AuthMode:      env("AUTH_MODE", "anonymous"),
-		AuthJWKSURL:   env("AUTH_JWKS_URL", ""),
-		AuthIssuer:    env("AUTH_ISSUER", ""),
-		AuthAudience:  env("AUTH_AUDIENCE", ""),
-		GroupsClaim:   env("AUTH_GROUPS_CLAIM", "groups"),
-		TrustedProxy:  env("AUTH_TRUSTED_PROXY", "false") == "true",
+		Addr:         env("ADDR", ":8080"),
+		StoreBackend: env("STORE_BACKEND", "memory"),
+		DatabaseURL:  env("DATABASE_URL", ""),
+		AuthMode:     env("AUTH_MODE", "anonymous"),
+		AuthJWKSURL:  env("AUTH_JWKS_URL", ""),
+		AuthIssuer:   env("AUTH_ISSUER", ""),
+		AuthAudience: env("AUTH_AUDIENCE", ""),
+		GroupsClaim:  env("AUTH_GROUPS_CLAIM", "groups"),
+		TrustedProxy: env("AUTH_TRUSTED_PROXY", "false") == "true",
+		// Default "admin" preserves current behavior (see field doc); set to
+		// "read" in chart values to downgrade anonymous callers to read-only.
+		AnonymousRole: env("AUTH_ANONYMOUS_ROLE", "admin"),
 		PublicBaseURL: env("PUBLIC_BASE_URL", "http://localhost:8080"),
 		WebDir:        env("WEB_DIR", ""),
 		SeedExamples:  env("SEED_EXAMPLES", "false") == "true",

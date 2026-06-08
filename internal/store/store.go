@@ -36,6 +36,14 @@ var ErrImmutableTag = errors.New("immutable tag: this version is already publish
 // ErrNameConflict); the concrete *NameConflictError carries the details.
 var ErrNameConflict = errors.New("name already in use by another kind in this namespace")
 
+// ErrTenantConflict is returned when a writer attempts to overwrite an existing
+// same-(kind,namespace,name,tag) artifact that is owned by a DIFFERENT tenant.
+// The upsert would otherwise reassign tenant_id/visibility to the incoming
+// object, letting a writer on tenant B hijack tenant A's artifact. Re-applying
+// to your OWN tenant's artifact is fine (normal versioning/update). Match it
+// with errors.Is(err, ErrTenantConflict).
+var ErrTenantConflict = errors.New("artifact is owned by a different tenant")
+
 // NameConflictError describes a rejected name claim with enough context for a
 // human-meaningful API message: which name/namespace collided, the kind the
 // publisher tried to use, and the kind + ARN that already owns the name.

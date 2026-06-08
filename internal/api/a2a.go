@@ -36,8 +36,12 @@ func (s *Server) agentCard(w http.ResponseWriter, r *http.Request, tag string) {
 		writeErr(w, http.StatusBadRequest, "agent card is only defined for agents; use /v0/agents/{name}/card")
 		return
 	}
-	ns := s.namespace(r)
 	name := chi.URLParam(r, "name")
+	// Resolve the agent's namespace across the namespaces the caller can read
+	// (mirrors the /v0 get path); previously this defaulted to DefaultNamespace,
+	// so an agent published into any other namespace 404'd on its card and on
+	// .well-known/agent-card.json even though it was listed in the catalog.
+	ns := s.resolveNamespace(r, kind, name)
 
 	agent, err := s.store.Get(r.Context(), kind, ns, name, tag)
 	if errors.Is(err, store.ErrNotFound) {

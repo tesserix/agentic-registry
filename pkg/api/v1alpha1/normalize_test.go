@@ -65,6 +65,30 @@ func TestContentHashStableAndContentSensitive(t *testing.T) {
 	}
 }
 
+func TestValidateTenantNamespaceInvariant(t *testing.T) {
+	// Decoupled tenantId != namespace is rejected (would let an artifact claim a
+	// tenant other than the namespace it lives in).
+	bad := Object{Kind: KindSkill, Metadata: ObjectMeta{Name: "x", Namespace: "team-a", TenantID: "team-b"}}
+	if err := bad.Validate(); err == nil {
+		t.Error("expected error when tenantId != namespace")
+	}
+	// Empty tenantId is fine (Normalized defaults it to namespace).
+	empty := Object{Kind: KindSkill, Metadata: ObjectMeta{Name: "x", Namespace: "team-a"}}
+	if err := empty.Validate(); err != nil {
+		t.Errorf("empty tenantId should be accepted, got %v", err)
+	}
+	// Explicit tenantId equal to namespace is fine.
+	matched := Object{Kind: KindSkill, Metadata: ObjectMeta{Name: "x", Namespace: "team-a", TenantID: "team-a"}}
+	if err := matched.Validate(); err != nil {
+		t.Errorf("tenantId == namespace should be accepted, got %v", err)
+	}
+	// tenantId set with empty namespace must equal the default namespace.
+	defaulted := Object{Kind: KindSkill, Metadata: ObjectMeta{Name: "x", TenantID: DefaultNamespace}}
+	if err := defaulted.Validate(); err != nil {
+		t.Errorf("tenantId == default namespace should be accepted, got %v", err)
+	}
+}
+
 func TestValidateRejectsUnknownKind(t *testing.T) {
 	o := Object{Kind: "Nope", Metadata: ObjectMeta{Name: "x"}}
 	if err := o.Validate(); err == nil {

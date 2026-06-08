@@ -3,10 +3,14 @@
 # .npmrc — pnpm 11 reads its own settings only from pnpm-workspace.yaml and
 # silently ignores `minimum-release-age` / build approvals in .npmrc.
 #
-# 1. minimumReleaseAge: rejects any lockfile entry published within a ~24h
-#    cutoff. Our deps are public, pinned in a committed lockfile, and
-#    reviewed, so freshly-cut releases must not fail the build. Disable it.
-minimumReleaseAge: 0
+# 1. minimumReleaseAge: pnpm 11's account-takeover defense — it refuses to add a
+#    package version published within this many minutes, the window in which a
+#    compromised-maintainer/typosquat release is most likely to be caught and
+#    pulled. The committed lockfile already gives reproducible installs, so this
+#    gate is inert on a frozen-lockfile CI build and only bites on lockfile
+#    *regeneration* — which is exactly when a fresh malicious release would be
+#    pulled in. Keep it enabled (1440 = 24h); raise to 4320 (72h) for stricter.
+minimumReleaseAge: 1440
 #
 # 2. allowBuilds: pnpm 11 refuses to run dependency postinstall scripts unless
 #    explicitly approved, and exits non-zero (ERR_PNPM_IGNORED_BUILDS) when it

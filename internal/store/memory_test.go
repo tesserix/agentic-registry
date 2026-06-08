@@ -147,6 +147,41 @@ func TestNameFreedAfterSoftDelete(t *testing.T) {
 	}
 }
 
+func mkSkillTenant(ns, name, tenant string) v1alpha1.Object {
+	return v1alpha1.Object{
+		Kind:     v1alpha1.KindSkill,
+		Metadata: v1alpha1.ObjectMeta{Name: name, Namespace: ns, TenantID: tenant},
+		Spec:     map[string]interface{}{"description": "test " + name},
+	}
+}
+
+func TestApplyRejectsCrossTenantOverwrite(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	// Tenant A publishes payments-skill in a shared namespace.
+	if _, _, err := m.Apply(ctx, mkSkillTenant("shared", "payments-skill", "tenant-a")); err != nil {
+		t.Fatalf("tenant-a publish: %v", err)
+	}
+	// Tenant B attempts to overwrite the SAME (kind,namespace,name,tag): must be
+	// rejected so it can't reassign ownership/visibility.
+	_, _, err := m.Apply(ctx, mkSkillTenant("shared", "payments-skill", "tenant-b"))
+	if !errors.Is(err, ErrTenantConflict) {
+		t.Fatalf("cross-tenant overwrite must conflict, got %v", err)
+	}
+	// The artifact must still belong to tenant A.
+	got, gerr := m.Get(ctx, v1alpha1.KindSkill, "shared", "payments-skill", "latest")
+	if gerr != nil {
+		t.Fatalf("get after conflict: %v", gerr)
+	}
+	if got.Metadata.TenantID != "tenant-a" {
+		t.Fatalf("ownership must be unchanged, got tenant %q", got.Metadata.TenantID)
+	}
+	// Tenant A re-applying to its own artifact is normal versioning, not a conflict.
+	if _, _, err := m.Apply(ctx, mkSkillTenant("shared", "payments-skill", "tenant-a")); err != nil {
+		t.Fatalf("owner re-apply must succeed, got %v", err)
+	}
+}
+
 func names(items []v1alpha1.Object) []string {
 	out := make([]string, len(items))
 	for i, o := range items {

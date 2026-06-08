@@ -49,9 +49,16 @@ func main() {
 
 	handler := api.New(st, authn, cfg)
 	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           handler,
+		Addr:    cfg.Addr,
+		Handler: handler,
+		// ReadHeaderTimeout/ReadTimeout bound how long a client may take to send
+		// the request (Slowloris defense); WriteTimeout bounds the response; and
+		// IdleTimeout reaps idle keep-alive connections. The MCP discovery and
+		// render endpoints are all fast, so generous-but-finite values are safe.
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {

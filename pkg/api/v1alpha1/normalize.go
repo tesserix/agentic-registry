@@ -67,6 +67,21 @@ func (o *Object) Validate() error {
 	default:
 		return fmt.Errorf("invalid visibility %q (want public|internal|private)", o.Metadata.Visibility)
 	}
+	// Tenant invariant: a namespace maps 1:1 to a tenant (Normalized defaults an
+	// empty tenantId to the namespace). A publisher must not decouple the two by
+	// setting an explicit tenantId that differs from the (defaulted) namespace —
+	// that would let an artifact claim ownership by a tenant other than the
+	// namespace it lives in. An empty tenantId is fine (it defaults to namespace).
+	if o.Metadata.TenantID != "" {
+		ns := o.Metadata.Namespace
+		if ns == "" {
+			ns = DefaultNamespace
+		}
+		if o.Metadata.TenantID != ns {
+			return fmt.Errorf("metadata.tenantId %q must equal metadata.namespace %q (a namespace maps to exactly one tenant); leave tenantId empty to default it",
+				o.Metadata.TenantID, ns)
+		}
+	}
 	// Per-kind spec shape check (lenient: known fields only, unknown pass
 	// through). Returns a *SpecError so the API layer can surface field errors.
 	if err := ValidateSpec(o.Kind, o.Spec); err != nil {

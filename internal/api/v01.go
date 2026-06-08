@@ -109,9 +109,21 @@ func (s *Server) serverName(r *http.Request) string {
 	return name
 }
 
+// serverNamespace resolves the namespace an MCPServer lives in. mcpListServers
+// browses every readable namespace (Namespace:"all"), but get/versions/status
+// historically hardcoded DefaultNamespace — so a server published into any other
+// namespace 404'd on detail/versions and a status PATCH silently mutated (or
+// missed) the wrong namespace. Mirror the /v0 resolveNamespace behavior: honor
+// an explicit ?namespace= and otherwise locate the server by name across the
+// namespaces the caller can read, falling back to DefaultNamespace.
+func (s *Server) serverNamespace(r *http.Request, name string) string {
+	return s.resolveNamespace(r, v1alpha1.KindMCPServer, name)
+}
+
 func (s *Server) mcpListVersions(w http.ResponseWriter, r *http.Request) {
 	name := s.serverName(r)
-	tags, err := s.store.ListTags(r.Context(), v1alpha1.KindMCPServer, v1alpha1.DefaultNamespace, name)
+	ns := s.serverNamespace(r, name)
+	tags, err := s.store.ListTags(r.Context(), v1alpha1.KindMCPServer, ns, name)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "server not found")
 		return
@@ -122,7 +134,7 @@ func (s *Server) mcpListVersions(w http.ResponseWriter, r *http.Request) {
 	}
 	servers := make([]map[string]interface{}, 0, len(tags))
 	for _, tag := range tags {
-		o, err := s.store.Get(r.Context(), v1alpha1.KindMCPServer, v1alpha1.DefaultNamespace, name, tag)
+		o, err := s.store.Get(r.Context(), v1alpha1.KindMCPServer, ns, name, tag)
 		if err != nil || !auth.CanRead(identity(r), o) {
 			continue
 		}
@@ -133,11 +145,12 @@ func (s *Server) mcpListVersions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) mcpGetVersion(w http.ResponseWriter, r *http.Request) {
 	name := s.serverName(r)
+	ns := s.serverNamespace(r, name)
 	version := chi.URLParam(r, "version")
 	if version == "latest" {
 		version = ""
 	}
-	o, err := s.store.Get(r.Context(), v1alpha1.KindMCPServer, v1alpha1.DefaultNamespace, name, version)
+	o, err := s.store.Get(r.Context(), v1alpha1.KindMCPServer, ns, name, version)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "server version not found")
 		return
@@ -187,6 +200,7 @@ func (s *Server) mcpPublish(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) mcpSetStatus(w http.ResponseWriter, r *http.Request) {
 	name := s.serverName(r)
+	ns := s.serverNamespace(r, name)
 	version := chi.URLParam(r, "version")
 	var body struct {
 		Status        string `json:"status"`
@@ -202,7 +216,7 @@ func (s *Server) mcpSetStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "status must be active|deprecated|deleted")
 		return
 	}
-	o, err := s.store.Get(r.Context(), v1alpha1.KindMCPServer, v1alpha1.DefaultNamespace, name, version)
+	o, err := s.store.Get(r.Context(), v1alpha1.KindMCPServer, ns, name, version)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "server version not found")
 		return
@@ -211,7 +225,7 @@ func (s *Server) mcpSetStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "insufficient permission")
 		return
 	}
-	if err := s.store.SetStatus(r.Context(), v1alpha1.KindMCPServer, v1alpha1.DefaultNamespace, name, version, body.Status); err != nil {
+	if err := s.store.SetStatus(r.Context(), v1alpha1.KindMCPServer, ns, name, version, body.Status); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

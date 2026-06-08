@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -22,6 +23,17 @@ import (
 	"github.com/tesserix/agentic-registry/internal/store"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
+
+// requestTimeout is the per-request processing deadline enforced by the chi
+// Timeout middleware. It is shorter than the server WriteTimeout so the handler
+// is cancelled (and a 504 written) before the connection-level deadline fires.
+const requestTimeout = 30 * time.Second
+
+// maxApplyDocs caps how many documents a single /v0/apply (or /v0/apply DELETE)
+// request may carry, bounding the work one request can schedule (bulk-apply DoS
+// defense). The 8 MiB body limit in decodeMultiDoc already bounds bytes; this
+// bounds the per-document transaction count.
+const maxApplyDocs = 1000
 
 // Server holds the dependencies shared by all handlers.
 type Server struct {
@@ -44,6 +56,10 @@ func New(st store.Store, authn auth.Authenticator, cfg config.Config) http.Handl
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
+	// Per-request processing deadline: a handler that runs past this has its
+	// context cancelled and a 504 returned, so a slow store query or a wedged
+	// upstream resolver can't tie up a connection indefinitely (DoS defense).
+	r.Use(middleware.Timeout(requestTimeout))
 	r.Use(s.cors)
 	r.Use(s.count)
 	r.Use(auth.Middleware(authn))
@@ -72,17 +88,38 @@ func New(st store.Store, authn auth.Authenticator, cfg config.Config) http.Handl
 // spaHandler serves static files from dir, falling back to index.html for
 // unknown paths so client-side routes (e.g. /skills/foo) resolve.
 func spaHandler(dir string) http.HandlerFunc {
-	fs := http.FileServer(http.Dir(dir))
-	index := filepath.Join(dir, "index.html")
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		root = dir
+	}
+	fs := http.FileServer(http.Dir(root))
+	index := filepath.Join(root, "index.html")
 	return func(w http.ResponseWriter, r *http.Request) {
 		// API paths never fall through here (they're routed above), so any
 		// 404 reaching this is a UI route or static asset.
-		if p := filepath.Join(dir, filepath.Clean(r.URL.Path)); fileExists(p) {
+		//
+		// Path-traversal hardening: clean the request path to a single absolute
+		// candidate under root and confirm it stays within root. A request like
+		// /../../etc/passwd cleans to an escaping path and is served the SPA
+		// index instead of a file outside the web root. (http.FileServer cleans
+		// paths too, but we compute the existence check ourselves, so we must do
+		// the same containment check here.)
+		clean := filepath.Join(root, filepath.Clean("/"+r.URL.Path))
+		if within(root, clean) && fileExists(clean) {
 			fs.ServeHTTP(w, r)
 			return
 		}
 		http.ServeFile(w, r, index)
 	}
+}
+
+// within reports whether path is the root itself or lies inside it, guarding
+// against directory traversal once both are cleaned/absolute.
+func within(root, path string) bool {
+	if path == root {
+		return true
+	}
+	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 func fileExists(p string) bool {

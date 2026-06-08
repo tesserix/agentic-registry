@@ -203,6 +203,33 @@ func (d *DiscoveryServer) callTool(ctx context.Context, r *http.Request, params 
 	}
 }
 
+// resolveNamespace picks the namespace for a name-scoped get over MCP. An
+// explicit namespace argument is honored verbatim; otherwise the artifact is
+// located by name across the namespaces the caller can read (mirroring the /v0
+// HTTP get path), falling back to DefaultNamespace. Previously these tools
+// hardcoded DefaultNamespace, so a get over MCP 404'd for any artifact published
+// into another namespace even though list_/search returned it.
+func (d *DiscoveryServer) resolveNamespace(ctx context.Context, kind v1alpha1.Kind, name, explicit string, canRead func(v1alpha1.Object) bool) string {
+	if explicit != "" {
+		return explicit
+	}
+	res, err := d.store.List(ctx, store.ListOptions{
+		Kind:       kind,
+		Namespace:  "", // across every readable namespace
+		LatestOnly: true,
+		CanRead:    canRead,
+		Limit:      1 << 30,
+	})
+	if err == nil {
+		for _, o := range res.Items {
+			if o.Metadata.Name == name {
+				return o.Metadata.Namespace
+			}
+		}
+	}
+	return v1alpha1.DefaultNamespace
+}
+
 func (d *DiscoveryServer) kindTool(ctx context.Context, name string, args map[string]interface{}, str func(string) string, canRead func(v1alpha1.Object) bool) (interface{}, error) {
 	for _, k := range v1alpha1.AllKinds {
 		plural := v1alpha1.Plural(k)
@@ -219,11 +246,9 @@ func (d *DiscoveryServer) kindTool(ctx context.Context, name string, args map[st
 			}
 			return toolResult(summaries(res.Items)), nil
 		case "get_" + singular(plural):
-			ns := str("namespace")
-			if ns == "" {
-				ns = v1alpha1.DefaultNamespace
-			}
-			o, err := d.store.Get(ctx, k, ns, str("name"), str("tag"))
+			name := str("name")
+			ns := d.resolveNamespace(ctx, k, name, str("namespace"), canRead)
+			o, err := d.store.Get(ctx, k, ns, name, str("tag"))
 			if err != nil {
 				return nil, err
 			}
@@ -252,11 +277,9 @@ func (d *DiscoveryServer) withIdentity(o v1alpha1.Object) v1alpha1.Object {
 // skill references against the registry's Skill catalog in the same namespace
 // and honouring the caller's read visibility.
 func (d *DiscoveryServer) agentCardTool(ctx context.Context, str func(string) string, canRead func(v1alpha1.Object) bool) (interface{}, error) {
-	ns := str("namespace")
-	if ns == "" {
-		ns = v1alpha1.DefaultNamespace
-	}
-	agent, err := d.store.Get(ctx, v1alpha1.KindAgent, ns, str("name"), str("tag"))
+	name := str("name")
+	ns := d.resolveNamespace(ctx, v1alpha1.KindAgent, name, str("namespace"), canRead)
+	agent, err := d.store.Get(ctx, v1alpha1.KindAgent, ns, name, str("tag"))
 	if err != nil {
 		return nil, err
 	}

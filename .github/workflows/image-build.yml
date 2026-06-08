@@ -96,9 +96,21 @@ jobs:
       # rollout restart would only re-pull the currently pinned (older) tag
       # before Kargo bumps it, briefly running stale code.
 
-      - name: Trivy vulnerability scan
+      # CHART-12: gating scan (exit-code 1 on CRITICAL/HIGH), trivy-action pinned
+      # to a commit SHA (v0.36.0) instead of mutable @master.
+      - name: Trivy vulnerability gate
         if: github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Trivy vulnerability scan (SARIF)
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           format: sarif

@@ -76,6 +76,14 @@ func (m *Memory) Apply(_ context.Context, obj v1alpha1.Object) (v1alpha1.Object,
 	k := key(obj.Kind, obj.Metadata.Namespace, obj.Metadata.Name, obj.Metadata.Tag)
 	prev, existed := m.objs[k]
 
+	// Cross-tenant overwrite guard (mirrors postgres.go): an upsert onto an
+	// artifact owned by a DIFFERENT tenant would let a writer on tenant B hijack
+	// tenant A's same-(kind,namespace,name,tag) artifact. Re-applying to your own
+	// tenant's artifact is normal versioning and proceeds.
+	if existed && prev.Metadata.TenantID != obj.Metadata.TenantID {
+		return v1alpha1.Object{}, false, ErrTenantConflict
+	}
+
 	// Immutable version tags: a published version may not change content
 	// (the floating "latest" tag is exempt).
 	if m.immutableTags && existed && obj.Metadata.Tag != v1alpha1.DefaultTag &&
@@ -382,7 +390,7 @@ func (m *Memory) Counts(ctx context.Context, ns string, canRead func(v1alpha1.Ob
 	res := ListResult{}
 	counts := map[v1alpha1.Kind]int{}
 	for _, k := range v1alpha1.AllKinds {
-		r, err := m.List(ctx, ListOptions{Kind: k, Namespace: ns, LatestOnly: true, CanRead: canRead, Limit: 1 << 30})
+		r, err := m.List(ctx, ListOptions{Kind: k, Namespace: ns, LatestOnly: true, CanRead: canRead, Limit: maxScanRows})
 		if err != nil {
 			return nil, err
 		}
