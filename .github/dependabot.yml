@@ -22,6 +22,12 @@ updates:
     groups:
       web-minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # Dependabot's npm updater errors out trying to bump react-router-dom in
+      # this pnpm workspace (its companion react-router pin can't be resolved by
+      # the updater), so every run failed on it. Ignore it here to keep CI green;
+      # bump react-router-dom manually and remove this once the updater resolves.
+      - dependency-name: "react-router-dom"
 
   - package-ecosystem: github-actions
     directory: "/"
