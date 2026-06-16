@@ -109,6 +109,27 @@ func TestExportKagentAll(t *testing.T) {
 	}
 }
 
+func TestExportKagentAllVariants(t *testing.T) {
+	srv, st := testServer(t)
+	seedMCPAndAgent(t, st)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/v0/export/kagent?namespace=devai&variants=anthropic:kagent-mc-anthropic,openai:kagent-mc-openai", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// One Agent variant per provider, each named <agent>-<suffix>, on its own
+	// ModelConfig — and separated by `---` so they parse as distinct docs.
+	for _, want := range []string{"name: reviewer-anthropic", "name: reviewer-openai", "kagent-mc-anthropic", "kagent-mc-openai", "\n---\n"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("variant export missing %q\n%s", want, body)
+		}
+	}
+}
+
 func TestExportKagentAllLabelSelector(t *testing.T) {
 	srv, st := testServer(t)
 	seedMCPAndAgent(t, st) // "reviewer" has no labels

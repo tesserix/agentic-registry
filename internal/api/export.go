@@ -174,6 +174,12 @@ func (s *Server) v0ExportKagentAll(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusInternalServerError, err.Error())
 				return
 			}
+			// Separate every rendered doc with `---`; without it, concatenated
+			// Agent docs parse as ONE YAML document (last keys win) and only the
+			// final variant/agent is applied.
+			if buf.Len() > 0 {
+				buf.WriteString("---\n")
+			}
 			buf.Write(out)
 		}
 	}
