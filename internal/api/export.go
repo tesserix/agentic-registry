@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -139,22 +140,42 @@ func (s *Server) v0ExportKagentAll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	opts := kagent.Options{
-		Namespace:      r.URL.Query().Get("targetNamespace"),
-		ModelConfigRef: r.URL.Query().Get("modelConfig"),
-		GatewayURL:     r.URL.Query().Get("gatewayUrl"),
+	baseOpts := kagent.Options{
+		Namespace:  r.URL.Query().Get("targetNamespace"),
+		GatewayURL: r.URL.Query().Get("gatewayUrl"),
+	}
+	// `variants`: comma-separated suffix:modelConfig pairs (e.g.
+	// "anthropic:kagent-mc-anthropic,openai:kagent-mc-openai"). One Agent CR is
+	// rendered per (agent, variant), named "<agent>-<suffix>", so a per-user
+	// dispatch can target the provider/model variant the user chose. Absent →
+	// a single variant from `modelConfig` with no suffix (back-compatible).
+	type variant struct{ suffix, modelConfig string }
+	var variants []variant
+	for _, part := range strings.Split(r.URL.Query().Get("variants"), ",") {
+		kv := strings.SplitN(strings.TrimSpace(part), ":", 2)
+		if len(kv) == 2 && kv[0] != "" && kv[1] != "" {
+			variants = append(variants, variant{suffix: kv[0], modelConfig: kv[1]})
+		}
+	}
+	if len(variants) == 0 {
+		variants = []variant{{modelConfig: r.URL.Query().Get("modelConfig")}}
 	}
 	id := identity(r)
 	var buf bytes.Buffer
 	for _, agent := range res.Items {
 		agent = s.withIdentity(agent)
 		resolved, _ := s.resolveAgentRefs(r.Context(), id, agent)
-		out, err := kagent.Build(agent, resolved["mcpServers"], opts)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
+		for _, vv := range variants {
+			opts := baseOpts
+			opts.NameSuffix = vv.suffix
+			opts.ModelConfigRef = vv.modelConfig
+			out, err := kagent.Build(agent, resolved["mcpServers"], opts)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			buf.Write(out)
 		}
-		buf.Write(out)
 	}
 	writeYAML(w, buf.Bytes())
 }

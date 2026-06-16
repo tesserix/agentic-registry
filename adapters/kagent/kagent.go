@@ -47,6 +47,10 @@ type Options struct {
 	// Each ToolServer points at {GatewayURL}/mcp/<name>. When empty, the MCP
 	// server's own remote URL (if any) is used instead.
 	GatewayURL string
+	// NameSuffix, when set, is appended to the Agent CR name as "<name>-<suffix>"
+	// so one registry Agent can render multiple variants (e.g. one per provider/
+	// model ModelConfig) without colliding. Empty = the bare agent name.
+	NameSuffix string
 }
 
 func (o Options) withDefaults() Options {
@@ -93,6 +97,9 @@ func Build(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Options) ([
 func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Options) (Output, error) {
 	opts = opts.withDefaults()
 	name := adapters.SanitizeName(agentName(agent))
+	if opts.NameSuffix != "" {
+		name = adapters.SanitizeName(name + "-" + opts.NameSuffix)
+	}
 	if name == "unnamed" {
 		return Output{}, fmt.Errorf("agent has no name")
 	}

@@ -106,6 +106,21 @@ func TestBuild_NoGatewayFallsBackToRemoteURL(t *testing.T) {
 	}
 }
 
+func TestBuildOutput_NameSuffixVariant(t *testing.T) {
+	out, err := BuildOutput(sampleAgent(), nil, Options{ModelConfigRef: "kagent-mc-openai", NameSuffix: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := out.Agent["metadata"].(map[string]interface{})["name"]
+	if name != "code-reviewer-openai" {
+		t.Errorf("variant name: got %v want code-reviewer-openai", name)
+	}
+	dec := out.Agent["spec"].(map[string]interface{})["declarative"].(map[string]interface{})
+	if dec["modelConfig"] != "kagent-mc-openai" {
+		t.Errorf("variant modelConfig: got %v", dec["modelConfig"])
+	}
+}
+
 func TestBuildOutput_NoNameErrors(t *testing.T) {
 	_, err := BuildOutput(v1alpha1.Object{Kind: v1alpha1.KindAgent}, nil, Options{})
 	if err == nil {
