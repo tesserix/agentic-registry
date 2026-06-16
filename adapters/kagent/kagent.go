@@ -137,13 +137,21 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 			toolDocs[j]["metadata"].(map[string]interface{})["name"].(string)
 	})
 
-	agentSpec := map[string]interface{}{
-		"description":   stringField(agent, "description"),
+	// kagent v0.9.x nests the model + prompt + tools under spec.declarative
+	// and selects the agent kind via spec.type. (Pre-0.9 used a flat spec;
+	// emitting that against a 0.9 CRD prunes modelConfig/systemMessage and
+	// leaves spec.declarative nil, which makes the controller panic.)
+	declarative := map[string]interface{}{
 		"modelConfig":   opts.ModelConfigRef,
 		"systemMessage": systemMessage(agent),
 	}
 	if len(toolRefs) > 0 {
-		agentSpec["tools"] = toolRefs
+		declarative["tools"] = toolRefs
+	}
+	agentSpec := map[string]interface{}{
+		"type":        "Declarative",
+		"description": stringField(agent, "description"),
+		"declarative": declarative,
 	}
 
 	agentDoc := map[string]interface{}{

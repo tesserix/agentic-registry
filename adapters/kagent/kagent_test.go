@@ -40,11 +40,17 @@ func TestBuildOutput_AgentAndMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := out.Agent["spec"].(map[string]interface{})
-	if spec["systemMessage"] != "You are a strict code reviewer." {
-		t.Errorf("systemMessage: got %v", spec["systemMessage"])
+	// kagent v0.9.x: type=Declarative and the model/prompt/tools live under
+	// spec.declarative (not flat on spec).
+	if spec["type"] != "Declarative" {
+		t.Errorf("spec.type: got %v want Declarative", spec["type"])
 	}
-	if spec["modelConfig"] != "claude-opus-config" {
-		t.Errorf("modelConfig: got %v", spec["modelConfig"])
+	dec := spec["declarative"].(map[string]interface{})
+	if dec["systemMessage"] != "You are a strict code reviewer." {
+		t.Errorf("declarative.systemMessage: got %v", dec["systemMessage"])
+	}
+	if dec["modelConfig"] != "claude-opus-config" {
+		t.Errorf("declarative.modelConfig: got %v", dec["modelConfig"])
 	}
 	if len(out.ToolServers) != 1 {
 		t.Fatalf("want 1 ToolServer, got %d", len(out.ToolServers))
@@ -55,8 +61,8 @@ func TestBuildOutput_AgentAndMCP(t *testing.T) {
 	if shttp["url"] != want {
 		t.Errorf("toolserver url through gateway: got %v want %v", shttp["url"], want)
 	}
-	// the Agent's tool ref points at the ToolServer by name.
-	tool := spec["tools"].([]interface{})[0].(map[string]interface{})
+	// the Agent's tool ref (under declarative) points at the ToolServer by name.
+	tool := dec["tools"].([]interface{})[0].(map[string]interface{})
 	if tool["mcpServer"].(map[string]interface{})["toolServer"] != "github" {
 		t.Errorf("tool ref: got %v", tool["mcpServer"])
 	}
