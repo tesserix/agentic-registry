@@ -80,7 +80,8 @@ func TestBuild_YAMLContainsBothKinds(t *testing.T) {
 	}
 	got := string(out)
 	for _, want := range []string{
-		"apiVersion: kagent.dev/v1alpha1",
+		"apiVersion: kagent.dev/v1alpha2", // the Agent (declarative)
+		"apiVersion: kagent.dev/v1alpha1", // the ToolServer
 		"kind: Agent",
 		"kind: ToolServer",
 		"name: code-reviewer",

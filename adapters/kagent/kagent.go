@@ -7,12 +7,13 @@
 // reached through agentgateway at {gateway}/mcp/<name>, matching the routes the
 // agentgateway adapter renders.
 //
-// GVKs verified against the installed CRDs: the v1alpha1 stack — Agent and
-// ToolServer are both kagent.dev/v1alpha1, and a v1alpha1 Agent references a
-// ToolServer by name in spec.tools[].mcpServer.toolServer. (kagent also ships a
-// v1alpha2 Agent with a different, declarative shape + RemoteMCPServer; this
-// adapter targets v1alpha1 because that's the shape the registry's Agent maps
-// onto cleanly. Re-verify before wiring an automated apply.)
+// GVKs verified against the installed CRDs (kagent v0.9.x): the Agent CRD's
+// STORAGE version is kagent.dev/v1alpha2, whose spec nests the model + prompt
+// under spec.declarative and selects the kind via spec.type. v1alpha1 is still
+// served, but applying a v1alpha1 Agent converts to v1alpha2 for storage and
+// drops the flat fields, leaving spec.declarative nil → the controller panics.
+// So the Agent is emitted as v1alpha2. ToolServer stays v1alpha1 (the tool path
+// still needs porting to v1alpha2 RemoteMCPServer + toolNames — TODO).
 package kagent
 
 import (
@@ -28,6 +29,10 @@ import (
 )
 
 const kagentAPIVersion = "kagent.dev/v1alpha1"
+
+// The Agent CRD's storage version. The declarative spec shape only exists here;
+// emitting v1alpha1 would convert-and-drop the model/prompt on storage.
+const kagentAgentAPIVersion = "kagent.dev/v1alpha2"
 
 // Options controls namespacing, the ModelConfig the Agent references, and how
 // MCP tools are reached.
@@ -155,7 +160,7 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 	}
 
 	agentDoc := map[string]interface{}{
-		"apiVersion": kagentAPIVersion,
+		"apiVersion": kagentAgentAPIVersion,
 		"kind":       "Agent",
 		"metadata": map[string]interface{}{
 			"name":        name,
