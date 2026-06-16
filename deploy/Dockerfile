@@ -4,7 +4,7 @@
 # CHART-11: pin the tesserix base images by digest. The :latest tags are
 # mutable, so an unpinned build is not reproducible; publish immutable
 # date/sha tags upstream and bump these digests deliberately.
-FROM ghcr.io/tesserix/base-node-builder-22:latest@sha256:6f10117e2d506e2ddc99b2daeecc854a24ab4b8fc0cbcbcfc2c7f4eedc0e7e1f AS web
+FROM ghcr.io/tesserix/base-node-builder-22:latest@sha256:b8f1a92a3212c92f7b173e54be02a72be3d1a1c53a65595c805874dfea55e4dd AS web
 USER 0:0
 # CI=true lets pnpm reconcile/purge node_modules non-interactively (no TTY in
 # the build), e.g. when the lockfile changed since a cached install layer.
