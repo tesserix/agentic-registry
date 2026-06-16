@@ -43,9 +43,25 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Gate on the presence of the maintainer PAT. Until it's configured this
+      # job stays GREEN and simply no-ops (the PR waits for a manual merge) —
+      # it never errors and never bypasses checks. See header for setup.
+      - name: Check for maintainer PAT
+        id: gate
+        env:
+          DEPENDABOT_PAT: ${{ secrets.DEPENDABOT_PAT }}
+        run: |
+          if [ -n "$DEPENDABOT_PAT" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DEPENDABOT_PAT not set — skipping auto-approve/merge. Add it as a Dependabot secret to enable fully automated merges."
+          fi
+
       # Approve as the code owner (@Sam123ben) so the required code-owner review
       # is satisfied automatically.
       - name: Approve as code owner
+        if: ${{ steps.gate.outputs.enabled == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.DEPENDABOT_PAT }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -56,8 +72,9 @@ jobs:
       # pass — builds are the gate, nothing merges red.
       #
       # To restrict to non-major updates only, uncomment the guard below:
-      #   if: ${{ steps.meta.outputs.update-type != 'version-update:semver-major' }}
+      #   && steps.meta.outputs.update-type != 'version-update:semver-major'
       - name: Enable auto-merge
+        if: ${{ steps.gate.outputs.enabled == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.DEPENDABOT_PAT }}
           PR_URL: ${{ github.event.pull_request.html_url }}

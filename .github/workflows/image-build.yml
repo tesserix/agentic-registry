@@ -65,7 +65,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
-            type=sha,prefix={{branch}}-
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-,enable=${{ github.event_name != 'pull_request' }}
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
             org.opencontainers.image.title=agentic-registry
@@ -87,7 +88,9 @@ jobs:
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=registry,ref=${{ steps.cache.outputs.ref }}
-          cache-to: type=registry,ref=${{ steps.cache.outputs.ref }},mode=max
+          # Writing the registry cache needs GHCR auth, which we skip on PRs
+          # (no login). Read-only cache-from still works against the public image.
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0},mode=max', steps.cache.outputs.ref) || '' }}
           provenance: false
 
       # Delivery is handled by Kargo + ArgoCD: the warehouse discovers the
