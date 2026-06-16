@@ -18,7 +18,7 @@ RUN pnpm build
 
 # ---- build the Go server (static binary) -----------------------------------
 # CHART-11: pin by digest (see note above).
-FROM ghcr.io/tesserix/base-go-builder:latest@sha256:2f09058d025b7e8760f057fcdac047116e2d728e6e85cf9fcd6dc5a80d7be57f AS build
+FROM ghcr.io/tesserix/base-go-builder:latest@sha256:1616bae3b3f9cb3521be653de41087d56840417d4d89aff87bd090514bdbfb9b AS build
 USER 0:0
 WORKDIR /src
 COPY go.mod go.sum ./
