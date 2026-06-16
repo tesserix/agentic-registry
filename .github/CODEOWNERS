@@ -1,17 +1,7 @@
 # Code owners — auto-requested for review on matching paths.
-# Last match wins, so the least-specific catch-all goes first.
+#
+# This project is maintained by a single maintainer. Every change to any path
+# requires review and approval from @Sam123ben before it can merge to `main`.
+# Branch protection enforces code-owner review, so this rule gates all merges.
 
-* @tesserix/maintainers
-
-/backend/        @tesserix/registry-backend
-/pkg/            @tesserix/registry-backend
-/internal/       @tesserix/registry-backend
-/cmd/            @tesserix/registry-backend
-/web/            @tesserix/registry-frontend
-/deploy/         @tesserix/registry-infra
-/adapters/       @tesserix/registry-backend
-
-# Governance & security are owned by maintainers explicitly.
-/SECURITY.md     @tesserix/maintainers
-/LICENSE         @tesserix/maintainers
-/.github/        @tesserix/maintainers
+* @Sam123ben
