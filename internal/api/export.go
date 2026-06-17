@@ -98,12 +98,30 @@ func (s *Server) v0ExportKagent(w http.ResponseWriter, r *http.Request) {
 	}
 	agent = s.withIdentity(agent)
 	resolved, _ := s.resolveAgentRefs(r.Context(), id, agent)
-
-	out, err := kagent.Build(agent, resolved["mcpServers"], kagent.Options{
+	opts := kagent.Options{
 		Namespace:      r.URL.Query().Get("targetNamespace"),
 		ModelConfigRef: r.URL.Query().Get("modelConfig"),
 		GatewayURL:     r.URL.Query().Get("gatewayUrl"),
-	})
+		SystemPrompt:   s.resolveSystemPrompt(r.Context(), id, agent),
+	}
+
+	// Cross-validation: ?validate=true returns a JSON {ok, issues} report of
+	// whether this agent renders a kagent CR the controller ACCEPTS (vs the YAML)
+	// — so DevAI authoring can check schema alignment before publish/deploy
+	// instead of discovering a rejection at reconcile time.
+	if r.URL.Query().Get("validate") == "true" {
+		issues := kagent.Validate(agent, resolved["mcpServers"], opts)
+		ok := true
+		for _, is := range issues {
+			if is.Severity == "error" {
+				ok = false
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": ok, "issues": issues})
+		return
+	}
+
+	out, err := kagent.Build(agent, resolved["mcpServers"], opts)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -165,10 +183,12 @@ func (s *Server) v0ExportKagentAll(w http.ResponseWriter, r *http.Request) {
 	for _, agent := range res.Items {
 		agent = s.withIdentity(agent)
 		resolved, _ := s.resolveAgentRefs(r.Context(), id, agent)
+		systemPrompt := s.resolveSystemPrompt(r.Context(), id, agent)
 		for _, vv := range variants {
 			opts := baseOpts
 			opts.NameSuffix = vv.suffix
 			opts.ModelConfigRef = vv.modelConfig
+			opts.SystemPrompt = systemPrompt
 			out, err := kagent.Build(agent, resolved["mcpServers"], opts)
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, err.Error())

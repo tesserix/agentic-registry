@@ -79,6 +79,31 @@ func (s *Server) resolveAgentRefs(ctx context.Context, id auth.Identity, agent v
 	return resolved, unresolved
 }
 
+// resolveSystemPrompt returns the agent's effective system prompt for runtimes
+// that need it inline (kagent's systemMessage must be non-empty). Prefers the
+// agent's own spec.systemPrompt; otherwise follows the scalar spec.promptRef to
+// the Prompt artifact and returns its spec.systemPrompt. Most registry agents
+// keep their prompt in a referenced Prompt (not inline), so without this they'd
+// export an empty systemMessage and the kagent controller would reject the CR.
+// Returns "" when nothing resolves (Build then falls back to the description).
+func (s *Server) resolveSystemPrompt(ctx context.Context, id auth.Identity, agent v1alpha1.Object) string {
+	if sp, ok := agent.Spec["systemPrompt"].(string); ok && sp != "" {
+		return sp
+	}
+	ref, _ := agent.Spec["promptRef"].(string)
+	if ref == "" {
+		return ""
+	}
+	obj, err := s.store.Get(ctx, v1alpha1.KindPrompt, agent.Metadata.Namespace, ref, "")
+	if err != nil || !auth.CanRead(id, obj) {
+		return ""
+	}
+	if sp, ok := obj.Spec["systemPrompt"].(string); ok {
+		return sp
+	}
+	return ""
+}
+
 // v0AgentResolved serves an Agent with its references resolved.
 func (s *Server) v0AgentResolved(w http.ResponseWriter, r *http.Request) {
 	s.agentResolved(w, r, "")

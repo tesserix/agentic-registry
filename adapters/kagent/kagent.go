@@ -51,6 +51,11 @@ type Options struct {
 	// so one registry Agent can render multiple variants (e.g. one per provider/
 	// model ModelConfig) without colliding. Empty = the bare agent name.
 	NameSuffix string
+	// SystemPrompt, when set, becomes the kagent systemMessage. The export
+	// resolves the agent's promptRef (a Prompt artifact) into this, so agents
+	// that keep their prompt in a referenced artifact — almost all of them —
+	// still render a valid CR without duplicating the prompt inline.
+	SystemPrompt string
 }
 
 func (o Options) withDefaults() Options {
@@ -155,7 +160,7 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 	// leaves spec.declarative nil, which makes the controller panic.)
 	declarative := map[string]interface{}{
 		"modelConfig":   opts.ModelConfigRef,
-		"systemMessage": systemMessage(agent),
+		"systemMessage": systemMessage(agent, opts.SystemPrompt),
 	}
 	if len(toolRefs) > 0 {
 		declarative["tools"] = toolRefs
@@ -220,12 +225,65 @@ func mcpURL(srv v1alpha1.Object, san string, opts Options) string {
 	return ""
 }
 
-// systemMessage prefers the agent's own systemPrompt, then its description.
-func systemMessage(agent v1alpha1.Object) string {
+// systemMessage prefers an explicit override (a promptRef the export resolved),
+// then the agent's own systemPrompt, then its description. kagent requires a
+// non-empty systemMessage, so a registry agent that keeps its prompt in a
+// referenced Prompt artifact (most do) still renders a valid CR.
+func systemMessage(agent v1alpha1.Object, override string) string {
+	if override != "" {
+		return override
+	}
 	if sp, ok := agent.Spec["systemPrompt"].(string); ok && sp != "" {
 		return sp
 	}
 	return stringField(agent, "description")
+}
+
+// Issue is one cross-validation finding: whether a DevAI registry agent will
+// render a kagent CR the controller ACCEPTS (error) or merely something to note
+// (warning). Lets DevAI authoring validate an agent against the kagent contract
+// before publish/deploy instead of discovering a rejection at reconcile time.
+type Issue struct {
+	Severity string `json:"severity"` // "error" | "warning"
+	Field    string `json:"field"`
+	Message  string `json:"message"`
+}
+
+// Validate renders the agent exactly as Build does and reports whether the
+// result satisfies the kagent Agent contract. Pure (applies nothing). errors =
+// the controller would reject it; warnings = accepted but worth flagging. This
+// is the cross-validation surface for DevAI ⇄ kagent schema alignment.
+func Validate(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Options) []Issue {
+	out, err := BuildOutput(agent, mcpServers, opts)
+	if err != nil {
+		return []Issue{{Severity: "error", Field: "metadata.name", Message: err.Error()}}
+	}
+	var issues []Issue
+	spec, _ := out.Agent["spec"].(map[string]interface{})
+	if t, _ := spec["type"].(string); t == "" {
+		issues = append(issues, Issue{"error", "spec.type", "must be set (Declarative) — a flat/typeless spec makes the controller nil-panic"})
+	}
+	decl, _ := spec["declarative"].(map[string]interface{})
+	if decl == nil {
+		issues = append(issues, Issue{"error", "spec.declarative", "missing — model/prompt/tools must nest under spec.declarative for v1alpha2"})
+		return issues
+	}
+	if mc, _ := decl["modelConfig"].(string); mc == "" {
+		issues = append(issues, Issue{"error", "spec.declarative.modelConfig", "a ModelConfig reference is required"})
+	}
+	if sm, _ := decl["systemMessage"].(string); sm == "" {
+		issues = append(issues, Issue{
+			"error", "spec.declarative.systemMessage",
+			"empty — the controller rejects an agent with no system message; set spec.systemPrompt inline or a resolvable spec.promptRef → Prompt.spec.systemPrompt",
+		})
+	}
+	if _, hasTools := decl["tools"]; hasTools {
+		issues = append(issues, Issue{
+			"warning", "spec.declarative.tools",
+			"tools render as v1alpha1 ToolServer refs; kagent 0.9 prefers RemoteMCPServer + toolNames (port pending)",
+		})
+	}
+	return issues
 }
 
 func stringField(o v1alpha1.Object, field string) string {
