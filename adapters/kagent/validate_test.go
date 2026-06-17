@@ -81,8 +81,12 @@ func TestBuild_SandboxAgentWhenWorkerPoolSet(t *testing.T) {
 	}
 	spec := out.Agent["spec"].(map[string]interface{})
 	sub, ok := spec["substrate"].(map[string]interface{})
-	if !ok || sub["workerPoolRef"] != "default-pool" {
-		t.Fatalf("expected substrate.workerPoolRef=default-pool, got %v", spec["substrate"])
+	if !ok {
+		t.Fatalf("expected substrate object, got %v", spec["substrate"])
+	}
+	ref, _ := sub["workerPoolRef"].(map[string]interface{})
+	if ref["name"] != "default-pool" {
+		t.Fatalf("expected substrate.workerPoolRef.name=default-pool, got %v", sub["workerPoolRef"])
 	}
 	// declarative block is identical to a classic Agent.
 	if _, ok := spec["declarative"]; !ok {

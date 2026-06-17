@@ -186,7 +186,12 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 	kind := "Agent"
 	if opts.WorkerPoolRef != "" {
 		kind = "SandboxAgent"
-		agentSpec["substrate"] = map[string]interface{}{"workerPoolRef": opts.WorkerPoolRef}
+		// workerPoolRef is an object reference {name[, apiGroup, kind]}, NOT a
+		// bare string — the SandboxAgent CRD rejects a string (verified against
+		// the live cluster via server-side dry-run).
+		agentSpec["substrate"] = map[string]interface{}{
+			"workerPoolRef": map[string]interface{}{"name": opts.WorkerPoolRef},
+		}
 	}
 
 	agentDoc := map[string]interface{}{
@@ -304,8 +309,9 @@ func Validate(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Options)
 	// SandboxAgent (Agent Substrate) must pin a WorkerPool to schedule its Actor.
 	if k, _ := out.Agent["kind"].(string); k == "SandboxAgent" {
 		sub, _ := spec["substrate"].(map[string]interface{})
-		if wp, _ := sub["workerPoolRef"].(string); wp == "" {
-			issues = append(issues, Issue{"error", "spec.substrate.workerPoolRef", "a SandboxAgent must reference a Substrate WorkerPool"})
+		ref, _ := sub["workerPoolRef"].(map[string]interface{})
+		if name, _ := ref["name"].(string); name == "" {
+			issues = append(issues, Issue{"error", "spec.substrate.workerPoolRef.name", "a SandboxAgent must reference a Substrate WorkerPool by name"})
 		}
 	}
 	return issues
