@@ -103,6 +103,7 @@ func (s *Server) v0ExportKagent(w http.ResponseWriter, r *http.Request) {
 		ModelConfigRef: r.URL.Query().Get("modelConfig"),
 		GatewayURL:     r.URL.Query().Get("gatewayUrl"),
 		SystemPrompt:   s.resolveSystemPrompt(r.Context(), id, agent),
+		WorkerPoolRef:  r.URL.Query().Get("workerPool"), // set → render SandboxAgent (Substrate)
 	}
 
 	// Cross-validation: ?validate=true returns a JSON {ok, issues} report of
@@ -159,8 +160,9 @@ func (s *Server) v0ExportKagentAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	baseOpts := kagent.Options{
-		Namespace:  r.URL.Query().Get("targetNamespace"),
-		GatewayURL: r.URL.Query().Get("gatewayUrl"),
+		WorkerPoolRef: r.URL.Query().Get("workerPool"), // set → render SandboxAgents (Substrate)
+		Namespace:     r.URL.Query().Get("targetNamespace"),
+		GatewayURL:    r.URL.Query().Get("gatewayUrl"),
 	}
 	// `variants`: comma-separated suffix:modelConfig pairs (e.g.
 	// "anthropic:kagent-mc-anthropic,openai:kagent-mc-openai"). One Agent CR is

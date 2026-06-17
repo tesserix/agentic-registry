@@ -56,6 +56,12 @@ type Options struct {
 	// that keep their prompt in a referenced artifact — almost all of them —
 	// still render a valid CR without duplicating the prompt inline.
 	SystemPrompt string
+	// WorkerPoolRef, when set, renders a **SandboxAgent** (Agent Substrate)
+	// instead of a classic Agent: same spec.declarative, plus spec.substrate.
+	// workerPoolRef pinning it to a Substrate WorkerPool so it runs as a
+	// gVisor-isolated Actor (low overhead, fast cold start) rather than its own
+	// standing Deployment. Empty = classic Agent (one Deployment per agent).
+	WorkerPoolRef string
 }
 
 func (o Options) withDefaults() Options {
@@ -171,9 +177,21 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 		"declarative": declarative,
 	}
 
+	// Default: a classic Agent (one Deployment per agent). When a WorkerPool is
+	// set, render a SandboxAgent instead — identical declarative block, plus the
+	// substrate.workerPoolRef that makes the controller run it as a gVisor Actor
+	// in the shared Substrate WorkerPool (Agent Substrate). Both CRDs are
+	// kagent.dev/v1alpha2 and share the declarative schema, so this is the same
+	// renderer with one extra field.
+	kind := "Agent"
+	if opts.WorkerPoolRef != "" {
+		kind = "SandboxAgent"
+		agentSpec["substrate"] = map[string]interface{}{"workerPoolRef": opts.WorkerPoolRef}
+	}
+
 	agentDoc := map[string]interface{}{
 		"apiVersion": kagentAgentAPIVersion,
-		"kind":       "Agent",
+		"kind":       kind,
 		"metadata": map[string]interface{}{
 			"name":        name,
 			"namespace":   opts.Namespace,
@@ -282,6 +300,13 @@ func Validate(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Options)
 			"warning", "spec.declarative.tools",
 			"tools render as v1alpha1 ToolServer refs; kagent 0.9 prefers RemoteMCPServer + toolNames (port pending)",
 		})
+	}
+	// SandboxAgent (Agent Substrate) must pin a WorkerPool to schedule its Actor.
+	if k, _ := out.Agent["kind"].(string); k == "SandboxAgent" {
+		sub, _ := spec["substrate"].(map[string]interface{})
+		if wp, _ := sub["workerPoolRef"].(string); wp == "" {
+			issues = append(issues, Issue{"error", "spec.substrate.workerPoolRef", "a SandboxAgent must reference a Substrate WorkerPool"})
+		}
 	}
 	return issues
 }

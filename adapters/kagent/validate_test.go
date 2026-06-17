@@ -69,3 +69,42 @@ func TestValidate_ToolsWarn(t *testing.T) {
 		t.Fatalf("expected a tools warning, got %+v", issues)
 	}
 }
+
+// WorkerPoolRef set → render a SandboxAgent (Substrate) with substrate.workerPoolRef.
+func TestBuild_SandboxAgentWhenWorkerPoolSet(t *testing.T) {
+	out, err := BuildOutput(sampleAgent(), nil, Options{ModelConfigRef: "mc", WorkerPoolRef: "default-pool"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Agent["kind"] != "SandboxAgent" {
+		t.Fatalf("expected kind SandboxAgent, got %v", out.Agent["kind"])
+	}
+	spec := out.Agent["spec"].(map[string]interface{})
+	sub, ok := spec["substrate"].(map[string]interface{})
+	if !ok || sub["workerPoolRef"] != "default-pool" {
+		t.Fatalf("expected substrate.workerPoolRef=default-pool, got %v", spec["substrate"])
+	}
+	// declarative block is identical to a classic Agent.
+	if _, ok := spec["declarative"]; !ok {
+		t.Fatal("SandboxAgent must keep the declarative block")
+	}
+	// no WorkerPoolRef → classic Agent.
+	cl, _ := BuildOutput(sampleAgent(), nil, Options{ModelConfigRef: "mc"})
+	if cl.Agent["kind"] != "Agent" {
+		t.Fatalf("expected classic Agent, got %v", cl.Agent["kind"])
+	}
+}
+
+// A SandboxAgent with no WorkerPool ref → validation error.
+func TestValidate_SandboxAgentNeedsWorkerPool(t *testing.T) {
+	// Can't reach this via Options (WorkerPoolRef drives both), but assert the
+	// classic path doesn't false-positive: a classic Agent has no substrate.
+	issues := Validate(sampleAgent(), nil, Options{ModelConfigRef: "mc"})
+	if hasError(issues, "spec.substrate.workerPoolRef") {
+		t.Fatalf("classic Agent should not require a WorkerPool: %+v", issues)
+	}
+	ok := Validate(sampleAgent(), nil, Options{ModelConfigRef: "mc", WorkerPoolRef: "p"})
+	if hasError(ok, "spec.substrate.workerPoolRef") {
+		t.Fatalf("SandboxAgent with a pool should pass: %+v", ok)
+	}
+}
