@@ -33,6 +33,20 @@ spec:
   description: Turns rough engineering notes into clear, well-structured documentation and release notes.
 ---
 apiVersion: registry.agentic.dev/v1alpha1
+kind: Skill
+metadata:
+  name: x-twitter-scraper
+  visibility: public
+  labels: { domain: social-data, platform: x, provider: xquik, stability: stable }
+spec:
+  title: Xquik X Data Skill
+  description: Guides agents through X post search, follower export, monitoring, media download, MCP, and confirmation-gated publishing workflows.
+  source:
+    repository: https://github.com/Xquik-dev/x-twitter-scraper
+    path: skills/x-twitter-scraper
+    documentation: https://docs.xquik.com
+---
+apiVersion: registry.agentic.dev/v1alpha1
 kind: Tool
 metadata:
   name: postgres-query
@@ -190,7 +204,7 @@ spec:
   description: An autonomous agent that watches alerts, investigates Kubernetes and database health, and proposes remediations.
   # A2A (Agent2Agent) descriptor. The registry renders this into a standards
   # compliant Agent Card at /v0/agents/oncall-responder/card. `url` is the
-  # agent's OWN live A2A endpoint — the registry never proxies it, it only
+  # agent's OWN live A2A endpoint - the registry never proxies it, it only
   # advertises it. Any extra fields here pass straight through to the card.
   a2a:
     url: https://oncall-responder.devai.svc.cluster.local/a2a/v1
@@ -214,4 +228,4 @@ spec:
       description: Drafts a remediation plan (rollback, scale, patch) for a triaged incident and opens it as a PR.
       tags: [sre, remediation, automation]
       examples:
-        - "Pod is CrashLoopBackOff after the last deploy — propose a fix."
+        - "Pod is CrashLoopBackOff after the last deploy - propose a fix."
