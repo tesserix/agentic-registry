@@ -18,7 +18,7 @@ RUN pnpm build
 
 # ---- build the Go server (static binary) -----------------------------------
 # CHART-11: pin by digest (see note above).
-FROM ghcr.io/tesserix/base-go-builder:latest@sha256:9f4cdb984e99ce8af8abfb4bc4e27833108e4b85929145e85c10c16999df2424 AS build
+FROM ghcr.io/tesserix/base-go-builder:latest@sha256:a581d12737d4c8c1ee0ee704b1796b9b5ce4ff6c9a13956d10f0bea11f81d1c2 AS build
 USER 0:0
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -37,7 +37,7 @@ RUN addgroup -g 1000 aregistry \
 
 # ---- final: distroless static ----------------------------------------------
 # CHART-11: pin by digest (see note above).
-FROM ghcr.io/tesserix/base-distroless-static:latest@sha256:4c53be1fb34fe4348771a77ab2303183a43dc90bab2549b89bfad24e3b0ae835
+FROM ghcr.io/tesserix/base-distroless-static:latest@sha256:f7184159c2669a4ca84c9fd3766964c21cf519421d37ee4826499cdf7e7a6617
 WORKDIR /app
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build --chown=aregistry:aregistry /out/agentic-registry /app/agentic-registry
