@@ -1,40 +1,24 @@
 name: dependabot auto-merge
 
-# Fully automated merges for Dependabot pull requests — and ONLY Dependabot.
+# Auto-merge Dependabot PRs — and ONLY Dependabot — once this repo's CI checks
+# pass. Human PRs are never touched. Build-gating happens INSIDE this job (it
+# waits for the PR's own check runs to finish) so it works even when CI is
+# path-filtered and there is no single always-run check to require in branch
+# protection — and it never deadlocks unrelated human PRs.
 #
-# Human PRs are unaffected: `main` is protected and still requires a passing
-# review + checks from the sole maintainer (@Sam123ben). This workflow lets
-# dependency bumps merge themselves *once every required status check is green*.
-#
-# How it satisfies branch protection without a human in the loop:
-#   - `main` requires a CODEOWNERS review (@Sam123ben) and restricts merges to
-#     @Sam123ben only. A bot token (GITHUB_TOKEN) is neither, so it cannot
-#     approve-as-codeowner nor merge.
-#   - So this job acts AS @Sam123ben via a Personal Access Token, approving the
-#     PR (satisfies the code-owner review) and enabling auto-merge (GitHub then
-#     squash-merges the moment all required checks pass).
-#
-# ONE-TIME SETUP (required for this to actually merge):
-#   1. Create a fine-grained PAT owned by @Sam123ben, scoped to
-#      tesserix/agentic-registry with: Pull requests = Read & write,
-#      Contents = Read & write.
-#   2. Add it as a **Dependabot** secret (NOT an Actions secret) named
-#      DEPENDABOT_PAT:  Settings → Secrets and variables → Dependabot →
-#      New repository secret. (Dependabot-triggered workflows can only read
-#      Dependabot secrets.)
-# Until that secret exists the PR is still approved/merged-blocked safely — it
-# simply waits for a manual merge, never bypassing checks.
+# Requires a Dependabot secret DEPENDABOT_PAT (a maintainer PAT with Pull
+# requests + Contents write on this repo; set org-wide for tesserix). Without it
+# the job stays green and no-ops.
 
 on: pull_request
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  checks: read
 
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    # Guard: only ever act on Dependabot's own PRs.
     if: ${{ github.actor == 'dependabot[bot]' }}
     steps:
       - name: Fetch Dependabot metadata
@@ -43,9 +27,6 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Gate on the presence of the maintainer PAT. Until it's configured this
-      # job stays GREEN and simply no-ops (the PR waits for a manual merge) —
-      # it never errors and never bypasses checks. See header for setup.
       - name: Check for maintainer PAT
         id: gate
         env:
@@ -55,27 +36,48 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::DEPENDABOT_PAT not set — skipping auto-approve/merge. Add it as a Dependabot secret to enable fully automated merges."
+            echo "::notice::DEPENDABOT_PAT not set — skipping auto-merge."
           fi
 
-      # Approve as the code owner (@Sam123ben) so the required code-owner review
-      # is satisfied automatically.
-      - name: Approve as code owner
+      # Build gate: wait for every other check run on this PR's head commit to
+      # finish, and fail (so we do NOT merge) if any failed. This is what makes
+      # "merge once all builds pass" work without static required-checks.
+      - name: Wait for this PR's CI checks to pass
+        if: ${{ steps.gate.outputs.enabled == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ok=""
+          for i in $(seq 1 40); do          # up to ~20 min
+            json=$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate 2>/dev/null || echo '{"check_runs":[]}')
+            others=$(echo "$json" | jq '[.check_runs[] | select(.name | test("auto-merge"; "i") | not)]')
+            total=$(echo "$others" | jq 'length')
+            pending=$(echo "$others" | jq '[.[] | select(.status != "completed")] | length')
+            failed=$(echo "$others" | jq '[.[] | select(.conclusion != null and (.conclusion | IN("success","skipped","neutral") | not))] | length')
+            echo "poll $i: total=$total pending=$pending failed=$failed"
+            if [ "$failed" -gt 0 ]; then echo "::error::a CI check failed — not auto-merging"; exit 1; fi
+            if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then ok=1; break; fi
+            if [ "$total" -eq 0 ] && [ "$i" -ge 6 ]; then echo "no CI checks for this PR — nothing to gate on"; ok=1; break; fi
+            sleep 30
+          done
+          [ -n "$ok" ] || { echo "::error::timed out waiting for CI checks"; exit 1; }
+
+      - name: Approve as maintainer
         if: ${{ steps.gate.outputs.enabled == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.DEPENDABOT_PAT }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr review --approve "$PR_URL"
 
-      # Enable auto-merge as @Sam123ben (the only actor allowed to merge to
-      # main). GitHub completes the squash-merge once ALL required status checks
-      # pass — builds are the gate, nothing merges red.
-      #
-      # To restrict to non-major updates only, uncomment the guard below:
-      #   && steps.meta.outputs.update-type != 'version-update:semver-major'
-      - name: Enable auto-merge
+      # Direct squash-merge — the gate above already confirmed every check is
+      # green. (`--auto` would never fire on a repo with no required-check
+      # branch protection, so it would just sit enabled and never merge.)
+      - name: Merge
         if: ${{ steps.gate.outputs.enabled == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.DEPENDABOT_PAT }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: gh pr merge --squash --delete-branch "$PR_URL"
