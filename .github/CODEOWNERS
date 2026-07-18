@@ -1,7 +1,5 @@
-# Code owners — auto-requested for review on matching paths.
-#
-# This project is maintained by a single maintainer. Every change to any path
-# requires review and approval from @Sam123ben before it can merge to `main`.
-# Branch protection enforces code-owner review, so this rule gates all merges.
+# Code owners — auto-requested for review on every pull request.
+# The main-branch ruleset requires code-owner approval before merging;
+# only the owners below may bypass the PR requirement and push directly.
 
-* @Sam123ben
+* @sam123ben @mahesh-sangawar
