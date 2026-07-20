@@ -221,15 +221,23 @@ export function lintManifest(doc: unknown, expectedKind: string): LintIssue[] {
 }
 
 // getPath / setPath operate on dot-paths, creating intermediate objects/arrays.
+// Prototype-polluting segments are rejected outright: a crafted path like
+// "__proto__.isAdmin" must never walk or write the prototype chain.
+const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
 export function getPath(obj: unknown, path: string): unknown {
   return path.split(".").reduce<unknown>((acc, key) => {
-    if (acc == null) return undefined;
+    if (acc == null || FORBIDDEN_KEYS.has(key)) return undefined;
+    if (!Object.prototype.hasOwnProperty.call(acc, key)) return undefined;
     return (acc as Record<string, unknown>)[key];
   }, obj);
 }
 
 export function setPath(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
   const keys = path.split(".");
+  if (keys.some((k) => FORBIDDEN_KEYS.has(k))) {
+    throw new Error(`setPath: forbidden key in path "${path}"`);
+  }
   const clone = structuredClone(obj);
   let cur: Record<string, unknown> = clone;
   for (let i = 0; i < keys.length - 1; i++) {
