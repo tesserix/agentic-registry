@@ -4,7 +4,7 @@
 # CHART-11: pin the tesserix base images by digest. The :latest tags are
 # mutable, so an unpinned build is not reproducible; publish immutable
 # date/sha tags upstream and bump these digests deliberately.
-FROM ghcr.io/tesserix/base-node-builder-22:latest@sha256:a5f409a81e62ad0af5da349295d1e93200f36e5032978b4f468c635b2b456188 AS web
+FROM ghcr.io/tesserix/base-node-builder-22:latest@sha256:a7a88f29a9f369b2b34a9d2f824b6c7e828e35adb2d31002c1b12ec2366b37bf AS web
 USER 0:0
 # CI=true lets pnpm reconcile/purge node_modules non-interactively (no TTY in
 # the build), e.g. when the lockfile changed since a cached install layer.
@@ -18,7 +18,7 @@ RUN pnpm build
 
 # ---- build the Go server (static binary) -----------------------------------
 # CHART-11: pin by digest (see note above).
-FROM ghcr.io/tesserix/base-go-builder:latest@sha256:a581d12737d4c8c1ee0ee704b1796b9b5ce4ff6c9a13956d10f0bea11f81d1c2 AS build
+FROM ghcr.io/tesserix/base-go-builder:latest@sha256:ef0b76975a548f5ea1ec36184c635aa8b537a48d5432350f46bd3659c314d20a AS build
 USER 0:0
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -37,7 +37,7 @@ RUN addgroup -g 1000 aregistry \
 
 # ---- final: distroless static ----------------------------------------------
 # CHART-11: pin by digest (see note above).
-FROM ghcr.io/tesserix/base-distroless-static:latest@sha256:f7184159c2669a4ca84c9fd3766964c21cf519421d37ee4826499cdf7e7a6617
+FROM ghcr.io/tesserix/base-distroless-static:latest@sha256:4cdb81af983f2aa2c32656fe381bdefcc7733e576bf3db9e831c39cb5e3732e2
 WORKDIR /app
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build --chown=aregistry:aregistry /out/agentic-registry /app/agentic-registry
