@@ -25,8 +25,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
+# -trimpath makes the paths the runtime reports module-relative rather than
+# describing this builder's filesystem, which is what lets an error be mapped
+# onto a file in the repo at the commit this image was built from.
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags "-s -w -X github.com/tesserix/agentic-registry/internal/config.Version=${VERSION}" \
+    -trimpath \
     -o /out/agentic-registry ./cmd/agentic-registry
 
 # Named runtime user `aregistry` at uid 1000 (tesserix backend convention,

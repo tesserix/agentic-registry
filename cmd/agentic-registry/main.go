@@ -22,7 +22,14 @@ import (
 )
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		// Emits source.{file,line,function} on every record, which is what lets
+		// an error in the observability UI be traced back to the exact line that
+		// produced it. Paired with -trimpath in the Dockerfile the path is
+		// module-relative and maps onto a file in this repo at the commit the
+		// running image was built from.
+		AddSource: true,
+	}))
 	cfg := config.Load()
 
 	st, err := store.New(context.Background(), cfg)
