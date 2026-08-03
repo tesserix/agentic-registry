@@ -41,7 +41,7 @@ RUN addgroup -g 1000 aregistry \
 
 # ---- final: distroless static ----------------------------------------------
 # CHART-11: pin by digest (see note above).
-FROM ghcr.io/tesserix/base-distroless-static:latest@sha256:960645da83d2afedcaf1a217cc5d816f242cefd708d627faffb8b5571c10833e
+FROM ghcr.io/tesserix/base-distroless-static:latest@sha256:ac5e236f97e8b06e3a0616d85d5f38a88e28a95a9ec83aea8eb4e0e8eae8c0a4
 WORKDIR /app
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build --chown=aregistry:aregistry /out/agentic-registry /app/agentic-registry
