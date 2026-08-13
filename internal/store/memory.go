@@ -61,15 +61,28 @@ func (m *Memory) Apply(_ context.Context, obj v1alpha1.Object) (v1alpha1.Object,
 	}
 
 	// Auto-assign the next semver when no explicit version was given, so each
-	// publish is a unique immutable release (v0.0.1, v0.0.2, …).
+	// publish is a unique immutable release (v0.0.1, v0.0.2, …) — unless the
+	// content is byte-identical to the newest one, which is a no-op re-apply.
 	if m.autoVersion && autoVersionRequested(obj.Metadata.Tag) {
 		var tags []string
+		var latest v1alpha1.Object
 		for _, o := range m.objs {
-			if o.Kind == obj.Kind && o.Metadata.Namespace == obj.Metadata.Namespace && o.Metadata.Name == obj.Metadata.Name {
-				tags = append(tags, o.Metadata.Tag)
+			if o.Kind != obj.Kind || o.Metadata.Namespace != obj.Metadata.Namespace || o.Metadata.Name != obj.Metadata.Name {
+				continue
+			}
+			tags = append(tags, o.Metadata.Tag)
+			if o.Metadata.DeletionTimestamp != nil {
+				continue
+			}
+			if latest.Metadata.Tag == "" || o.Metadata.UpdatedAt.After(*latest.Metadata.UpdatedAt) {
+				latest = o
 			}
 		}
-		obj.Metadata.Tag = nextVersion(tags)
+		if reusesVersion(obj, latest.Metadata.Tag, latest.Metadata.ContentHash) {
+			obj.Metadata.Tag = latest.Metadata.Tag
+		} else {
+			obj.Metadata.Tag = nextVersion(tags)
+		}
 	}
 
 	hash := obj.ContentHash()

@@ -189,3 +189,65 @@ func names(items []v1alpha1.Object) []string {
 	}
 	return out
 }
+
+func mkSkillSpec(name, desc string) v1alpha1.Object {
+	return v1alpha1.Object{
+		Kind:     v1alpha1.KindSkill,
+		Metadata: v1alpha1.ObjectMeta{Name: name, Visibility: v1alpha1.VisibilityPublic},
+		Spec:     map[string]interface{}{"description": desc},
+	}
+}
+
+func TestAutoVersionReusesTagWhenContentUnchanged(t *testing.T) {
+	m := NewMemory()
+	m.autoVersion = true
+	ctx := context.Background()
+
+	first, _, err := m.Apply(ctx, mkSkillSpec("seeded", "v1"))
+	if err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	// A seed re-applied unchanged (bootstrap Job re-runs on every sync) must not
+	// mint a version — that grew the catalogue to 91 copies of every artifact.
+	for i := 0; i < 5; i++ {
+		again, created, err := m.Apply(ctx, mkSkillSpec("seeded", "v1"))
+		if err != nil {
+			t.Fatalf("re-apply %d: %v", i, err)
+		}
+		if created {
+			t.Fatalf("re-apply %d of identical content reported created", i)
+		}
+		if again.Metadata.Tag != first.Metadata.Tag {
+			t.Fatalf("re-apply %d bumped %q -> %q", i, first.Metadata.Tag, again.Metadata.Tag)
+		}
+	}
+	tags, err := m.ListTags(ctx, v1alpha1.KindSkill, v1alpha1.DefaultNamespace, "seeded")
+	if err != nil {
+		t.Fatalf("list tags: %v", err)
+	}
+	if len(tags) != 1 {
+		t.Fatalf("want 1 tag after 6 identical applies, got %d: %v", len(tags), tags)
+	}
+}
+
+func TestAutoVersionBumpsWhenContentChanges(t *testing.T) {
+	m := NewMemory()
+	m.autoVersion = true
+	ctx := context.Background()
+
+	first, _, err := m.Apply(ctx, mkSkillSpec("evolving", "v1"))
+	if err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	second, _, err := m.Apply(ctx, mkSkillSpec("evolving", "v2"))
+	if err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	if second.Metadata.Tag == first.Metadata.Tag {
+		t.Fatalf("changed content must publish a new version, both %q", first.Metadata.Tag)
+	}
+	tags, _ := m.ListTags(ctx, v1alpha1.KindSkill, v1alpha1.DefaultNamespace, "evolving")
+	if len(tags) != 2 {
+		t.Fatalf("want 2 tags, got %d: %v", len(tags), tags)
+	}
+}

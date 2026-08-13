@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+
+	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
 
 var semverRe = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)$`)
@@ -38,4 +40,16 @@ func nextVersion(tags []string) string {
 // (empty or the legacy "latest"), meaning the store should auto-assign one.
 func autoVersionRequested(tag string) bool {
 	return tag == "" || tag == "latest"
+}
+
+// reusesVersion reports whether an auto-versioned publish is byte-identical to
+// the newest existing revision and should therefore upsert that tag instead of
+// minting a new one. ContentHash covers the tag, so obj is re-hashed as if it
+// had been published under latestTag.
+func reusesVersion(obj v1alpha1.Object, latestTag, latestHash string) bool {
+	if latestTag == "" {
+		return false
+	}
+	obj.Metadata.Tag = latestTag
+	return obj.ContentHash() == latestHash
 }
