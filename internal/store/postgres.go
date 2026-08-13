@@ -270,25 +270,38 @@ func (p *Postgres) Apply(ctx context.Context, obj v1alpha1.Object) (v1alpha1.Obj
 		return v1alpha1.Object{}, false, fmt.Errorf("postgres: name guard: %w", err)
 	}
 
-	// Auto-assign the next semver when no explicit version was given.
+	// Auto-assign the next semver when no explicit version was given — unless
+	// the content is byte-identical to the newest live revision, which is a
+	// no-op re-apply and must upsert that tag rather than mint a new one. A
+	// re-applied seed catalogue otherwise grows by a full copy per publish.
 	if p.autoVersion && autoVersionRequested(obj.Metadata.Tag) {
 		rows, err := tx.Query(ctx,
-			`SELECT tag FROM registry.artifacts WHERE kind=$1 AND namespace=$2 AND name=$3`,
+			`SELECT tag, content_hash, deletion_timestamp IS NULL AS live FROM registry.artifacts
+			 WHERE kind=$1 AND namespace=$2 AND name=$3 ORDER BY updated_at DESC`,
 			string(obj.Kind), obj.Metadata.Namespace, obj.Metadata.Name)
 		if err != nil {
 			return v1alpha1.Object{}, false, fmt.Errorf("postgres: version scan: %w", err)
 		}
 		var tags []string
+		var latestTag, latestHash string
 		for rows.Next() {
-			var t string
-			if err := rows.Scan(&t); err != nil {
+			var t, h string
+			var live bool
+			if err := rows.Scan(&t, &h, &live); err != nil {
 				rows.Close()
 				return v1alpha1.Object{}, false, err
 			}
 			tags = append(tags, t)
+			if live && latestTag == "" {
+				latestTag, latestHash = t, h
+			}
 		}
 		rows.Close()
-		obj.Metadata.Tag = nextVersion(tags)
+		if reusesVersion(obj, latestTag, latestHash) {
+			obj.Metadata.Tag = latestTag
+		} else {
+			obj.Metadata.Tag = nextVersion(tags)
+		}
 	}
 
 	// Content hash depends on the (now-resolved) tag.
@@ -450,11 +463,10 @@ func (p *Postgres) Get(ctx context.Context, kind v1alpha1.Kind, ns, name, tag st
 	return p.scanOne(ctx, q, string(kind), ns, name, tag)
 }
 
-func (p *Postgres) List(ctx context.Context, opts ListOptions) (ListResult, error) {
-	// v1 strategy: fetch the candidate set by kind/namespace/deletion in SQL,
-	// then run the shared discovery pipeline (visibility/RBAC pre-filter →
-	// selector → search → collapse → paginate) in Go for identical semantics
-	// across backends. GIN-pushdown of the selector is a v2 optimization.
+// listScanQuery builds the bounded candidate scan for List, together with its
+// bound arguments and whether the rows come back pre-ranked (SQL cosine order,
+// which the Go pipeline must not re-sort).
+func listScanQuery(opts ListOptions, vectorEnabled bool) (string, []interface{}, bool) {
 	where := "TRUE"
 	args := []interface{}{}
 	add := func(clause string, v interface{}) {
@@ -474,11 +486,13 @@ func (p *Postgres) List(ctx context.Context, opts ListOptions) (ListResult, erro
 	// Semantic ranking: when a search query is present and pgvector is enabled,
 	// order candidates by cosine distance to the query embedding in SQL and let
 	// the pipeline preserve that order (PreRanked) instead of substring-filtering.
-	orderBy := ""
-	if opts.Search != "" && p.vectorEnabled {
+	// A per-artifact DISTINCT ON would have to reorder those rows, so ranked
+	// search keeps the Go collapse.
+	if opts.Search != "" && vectorEnabled {
 		args = append(args, vecLiteral(embed.Text(opts.Search)))
-		orderBy = fmt.Sprintf(" ORDER BY embedding <=> $%d ASC NULLS LAST", len(args))
-		opts.PreRanked = true
+		orderBy := fmt.Sprintf(" ORDER BY embedding <=> $%d ASC NULLS LAST", len(args))
+		return "SELECT " + cols + " FROM registry.artifacts WHERE " + where + orderBy +
+			fmt.Sprintf(" LIMIT %d", maxScanRows), args, true
 	}
 
 	// Bound the candidate scan in SQL. The RBAC/selector pre-filter and the exact
@@ -487,8 +501,30 @@ func (p *Postgres) List(ctx context.Context, opts ListOptions) (ListResult, erro
 	// driven by callers passing Limit=1<<30) is an unbounded-memory DoS on a large
 	// catalog. maxScanRows is a hard ceiling far above any realistic page so it
 	// never clips a real result set while capping worst-case memory.
-	q := "SELECT " + cols + " FROM registry.artifacts WHERE " + where + orderBy +
-		fmt.Sprintf(" LIMIT %d", maxScanRows)
+	//
+	// LatestOnly collapses to the newest revision in SQL rather than in page():
+	// a catalogue re-seeded on every sync holds ~90 superseded revisions per
+	// artifact, so scanning them all to discard 99% is what actually exhausts
+	// the heap. Note this now picks the newest revision *before* the RBAC,
+	// selector and search filters instead of after, so a filter can no longer
+	// surface a superseded revision — which is what "latest only" means.
+	if opts.LatestOnly {
+		return "SELECT DISTINCT ON (kind, namespace, name) " + cols +
+			" FROM registry.artifacts WHERE " + where +
+			" ORDER BY kind, namespace, name, updated_at DESC" +
+			fmt.Sprintf(" LIMIT %d", maxScanRows), args, false
+	}
+	return "SELECT " + cols + " FROM registry.artifacts WHERE " + where +
+		fmt.Sprintf(" LIMIT %d", maxScanRows), args, false
+}
+
+func (p *Postgres) List(ctx context.Context, opts ListOptions) (ListResult, error) {
+	// v1 strategy: fetch the candidate set by kind/namespace/deletion in SQL,
+	// then run the shared discovery pipeline (visibility/RBAC pre-filter →
+	// selector → search → collapse → paginate) in Go for identical semantics
+	// across backends. GIN-pushdown of the selector is a v2 optimization.
+	q, args, preRanked := listScanQuery(opts, p.vectorEnabled)
+	opts.PreRanked = preRanked
 	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
 		return ListResult{}, fmt.Errorf("postgres: list: %w", err)
