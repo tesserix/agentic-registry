@@ -17,3 +17,8 @@ minimumReleaseAge: 1440
 #    skips one. vite needs esbuild's postinstall to set up its native binary.
 allowBuilds:
   esbuild: true
+
+# Transitive dependency pins clearing open advisories.
+overrides:
+  postcss: ^8.5.23
+  react-router: ^7.18.2
