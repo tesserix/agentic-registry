@@ -282,13 +282,20 @@ The architecture *is* the security posture. The registry:
 - **stores no secrets** in its database — provider credentials are kept only as **references**
   to an external secret manager;
 - accepts identity **from the edge** — a trusted `X-Forwarded-*` header from a gateway (over
-  mTLS / a known gateway only), or a Bearer JWT verified against a configurable JWKS/issuer;
+  mTLS / a known gateway only), a Bearer JWT verified against a configurable JWKS/issuer,
+  or a tenant-scoped deploy key whose SHA-256 digest is stored by the server;
 - applies the **visibility/RBAC filter before any label selector**, so discovery can never
   widen access.
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md) — please report privately, do not open a
 public issue. Reports about secret leakage, RBAC bypass, or namespace-ownership spoofing are
 treated as high severity.
+
+Machine publishers can use `AUTH_DEPLOY_KEYS` with comma-separated
+`tenant=sha256-digest` entries. Repeating a tenant allows old and new keys to
+overlap during rotation. Keep the raw key only in the publisher's secret store;
+the registry compares its digest in constant time and grants only
+`registry:read registry:write` within the configured tenant.
 
 ---
 

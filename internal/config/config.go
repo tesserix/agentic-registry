@@ -12,6 +12,11 @@ import (
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
+type DeployKey struct {
+	TenantID string
+	SHA256   string
+}
+
 type Config struct {
 	// Addr is the HTTP listen address.
 	Addr string
@@ -36,6 +41,14 @@ type Config struct {
 	// DEFAULT is "admin" to preserve existing behavior; the flip to "read" is a
 	// deliberate chart-values change made later, paired with the mesh DENY policy.
 	AnonymousRole string
+	// DeployKeySHA256 contains one or more hex-encoded SHA-256 digests for
+	// overlap-safe machine credential rotation. The raw keys are never stored by
+	// the registry. DeployKeyTenantID scopes matching credentials to one tenant.
+	DeployKeySHA256   []string
+	DeployKeyTenantID string
+	// DeployKeys supports independent tenant credentials and overlap rotation.
+	// AUTH_DEPLOY_KEYS uses tenant=digest entries separated by commas.
+	DeployKeys []DeployKey
 
 	// CORS allowed origins for the marketplace UI (comma-separated).
 	CORSOrigins []string
@@ -90,14 +103,38 @@ func Load() Config {
 		TrustedProxy: env("AUTH_TRUSTED_PROXY", "false") == "true",
 		// Default "admin" preserves current behavior (see field doc); set to
 		// "read" in chart values to downgrade anonymous callers to read-only.
-		AnonymousRole: env("AUTH_ANONYMOUS_ROLE", "admin"),
-		PublicBaseURL: env("PUBLIC_BASE_URL", "http://localhost:8080"),
-		WebDir:        env("WEB_DIR", ""),
-		SeedExamples:  env("SEED_EXAMPLES", "false") == "true",
-		ImmutableTags: env("IMMUTABLE_TAGS", "true") == "true",
-		AutoVersion:   env("AUTO_VERSION", "true") == "true",
-		SigningKey:    env("SIGNING_PRIVATE_KEY", ""),
-		SigningDev:    env("SIGNING_DEV", "false") == "true",
+		AnonymousRole:     env("AUTH_ANONYMOUS_ROLE", "admin"),
+		DeployKeyTenantID: strings.TrimSpace(env("AUTH_DEPLOY_KEY_TENANT", "")),
+		PublicBaseURL:     env("PUBLIC_BASE_URL", "http://localhost:8080"),
+		WebDir:            env("WEB_DIR", ""),
+		SeedExamples:      env("SEED_EXAMPLES", "false") == "true",
+		ImmutableTags:     env("IMMUTABLE_TAGS", "true") == "true",
+		AutoVersion:       env("AUTO_VERSION", "true") == "true",
+		SigningKey:        env("SIGNING_PRIVATE_KEY", ""),
+		SigningDev:        env("SIGNING_DEV", "false") == "true",
+	}
+	if digests := env("AUTH_DEPLOY_KEY_SHA256", ""); digests != "" {
+		for _, digest := range strings.Split(digests, ",") {
+			if digest = strings.TrimSpace(digest); digest != "" {
+				c.DeployKeySHA256 = append(c.DeployKeySHA256, digest)
+			}
+		}
+	}
+	if entries := env("AUTH_DEPLOY_KEYS", ""); entries != "" {
+		for _, entry := range strings.Split(entries, ",") {
+			if entry = strings.TrimSpace(entry); entry == "" {
+				continue
+			}
+			tenant, digest, ok := strings.Cut(entry, "=")
+			if !ok {
+				c.DeployKeys = append(c.DeployKeys, DeployKey{SHA256: strings.TrimSpace(entry)})
+				continue
+			}
+			c.DeployKeys = append(c.DeployKeys, DeployKey{
+				TenantID: strings.TrimSpace(tenant),
+				SHA256:   strings.TrimSpace(digest),
+			})
+		}
 	}
 	if c.DatabaseURL != "" && c.StoreBackend == "memory" {
 		c.StoreBackend = "postgres"

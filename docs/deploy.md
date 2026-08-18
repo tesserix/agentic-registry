@@ -85,6 +85,12 @@ Memory-only resources, KEDA memory-trigger autoscaling, an ExternalSecret for
 the DB DSN, and Workload Identity for object storage are all wired in
 `charts/apps/agentic-registry/values.yaml` (in tesserix-k8s).
 
+For CI publishers, set `AUTH_ANONYMOUS_ROLE=read` and configure
+`AUTH_DEPLOY_KEYS` as comma-separated `tenant=sha256-digest` entries. The raw
+Bearer keys remain only in the publishers' secret stores. Add a second entry
+for the same tenant during rotation, update publishers, then remove the old
+digest after the overlap window.
+
 ## Tesserix GKE (ArgoCD)
 
 This deployment follows the platform guardrails — **no manual `kubectl apply`**.

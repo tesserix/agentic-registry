@@ -1,11 +1,19 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
 	"testing"
 
 	"github.com/tesserix/agentic-registry/internal/config"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
+
+func deployKeyDigest(key string) string {
+	digest := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(digest[:])
+}
 
 func obj(vis v1alpha1.Visibility, tenant string) v1alpha1.Object {
 	return v1alpha1.Object{
@@ -119,5 +127,127 @@ func TestTrustedHeaderRequiresTrustedProxy(t *testing.T) {
 	}
 	if _, err := New(config.Config{AuthMode: "trusted-header", TrustedProxy: true}); err != nil {
 		t.Fatalf("trusted-header with AUTH_TRUSTED_PROXY=true must build: %v", err)
+	}
+}
+
+func TestDeployKeyAuthenticatesTenantScopedWriter(t *testing.T) {
+	a, err := New(config.Config{
+		AuthMode:          "anonymous",
+		AnonymousRole:     "read",
+		DeployKeySHA256:   []string{deployKeyDigest("current-key")},
+		DeployKeyTenantID: "kora",
+	})
+	if err != nil {
+		t.Fatalf("deploy-key auth must build: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "/v0/apply", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer current-key")
+
+	id := a.Identify(req)
+	if !id.Authenticated || id.TenantID != "kora" || id.Subject != "deploy-key:kora" {
+		t.Fatalf("unexpected deploy-key identity: %#v", id)
+	}
+	if !CanWrite(id, obj(v1alpha1.VisibilityPrivate, "kora")) {
+		t.Fatal("deploy key must write within its tenant")
+	}
+	if CanWrite(id, obj(v1alpha1.VisibilityPrivate, "other")) {
+		t.Fatal("deploy key must not write outside its tenant")
+	}
+}
+
+func TestDeployKeySupportsRotationOverlap(t *testing.T) {
+	a, err := New(config.Config{
+		AuthMode:          "anonymous",
+		AnonymousRole:     "read",
+		DeployKeySHA256:   []string{deployKeyDigest("new-key"), deployKeyDigest("old-key")},
+		DeployKeyTenantID: "kora",
+	})
+	if err != nil {
+		t.Fatalf("deploy-key auth must build: %v", err)
+	}
+	for _, key := range []string{"new-key", "old-key"} {
+		req, reqErr := http.NewRequest(http.MethodPost, "/v0/apply", nil)
+		if reqErr != nil {
+			t.Fatalf("request: %v", reqErr)
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		if id := a.Identify(req); !id.Authenticated || id.TenantID != "kora" {
+			t.Fatalf("overlap key %q was not accepted", key)
+		}
+	}
+}
+
+func TestDeployKeysSelectTheMatchingTenant(t *testing.T) {
+	a, err := New(config.Config{
+		AuthMode:      "anonymous",
+		AnonymousRole: "read",
+		DeployKeys: []config.DeployKey{
+			{TenantID: "devai", SHA256: deployKeyDigest("devai-key")},
+			{TenantID: "kora", SHA256: deployKeyDigest("kora-key")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("multi-tenant deploy-key auth must build: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "/v0/apply", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer kora-key")
+
+	id := a.Identify(req)
+	if id.TenantID != "kora" || !CanWrite(id, obj(v1alpha1.VisibilityPrivate, "kora")) {
+		t.Fatalf("matching key must select only its tenant, got %#v", id)
+	}
+	if CanWrite(id, obj(v1alpha1.VisibilityPrivate, "devai")) {
+		t.Fatal("kora deploy key must not write to the devai tenant")
+	}
+}
+
+func TestInvalidDeployKeyDelegatesToConfiguredAuthenticator(t *testing.T) {
+	a, err := New(config.Config{
+		AuthMode:          "anonymous",
+		AnonymousRole:     "read",
+		DeployKeySHA256:   []string{deployKeyDigest("valid-key")},
+		DeployKeyTenantID: "kora",
+	})
+	if err != nil {
+		t.Fatalf("deploy-key auth must build: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "/v0/skills", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer invalid-key")
+
+	id := a.Identify(req)
+	if id.Subject != "local" || id.TenantID != v1alpha1.DefaultNamespace {
+		t.Fatalf("invalid deploy key must delegate, got %#v", id)
+	}
+	if CanWrite(id, obj(v1alpha1.VisibilityPrivate, v1alpha1.DefaultNamespace)) {
+		t.Fatal("delegated read-only identity must not gain write access")
+	}
+}
+
+func TestDeployKeyConfigurationRejectsMissingTenantAndMalformedDigest(t *testing.T) {
+	for name, cfg := range map[string]config.Config{
+		"missing tenant": {
+			AuthMode:        "anonymous",
+			DeployKeySHA256: []string{deployKeyDigest("key")},
+		},
+		"malformed digest": {
+			AuthMode:          "anonymous",
+			DeployKeySHA256:   []string{"not-a-sha256-digest"},
+			DeployKeyTenantID: "kora",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := New(cfg); err == nil {
+				t.Fatal("invalid deploy-key configuration must be rejected")
+			}
+		})
 	}
 }
