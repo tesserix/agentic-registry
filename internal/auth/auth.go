@@ -7,6 +7,9 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -88,14 +91,20 @@ type Authenticator interface {
 
 // New builds an Authenticator from config.
 func New(cfg config.Config) (Authenticator, error) {
+	var base Authenticator
+	var err error
 	switch cfg.AuthMode {
 	case "jwks":
-		return newJWKSAuthenticator(cfg)
+		base, err = newJWKSAuthenticator(cfg)
 	case "trusted-header":
-		return newTrustedHeaderAuth(cfg)
+		base, err = newTrustedHeaderAuth(cfg)
 	default: // "anonymous"
-		return newAnonymousAuth(cfg)
+		base, err = newAnonymousAuth(cfg)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return withDeployKeys(base, cfg)
 }
 
 // Middleware attaches the resolved Identity to the request context. It does not
@@ -221,6 +230,65 @@ func splitTrim(s string) []string {
 		}
 	}
 	return out
+}
+
+type deployKeyAuth struct {
+	next Authenticator
+	keys []deployKey
+}
+
+type deployKey struct {
+	digest [sha256.Size]byte
+	tenant string
+}
+
+func withDeployKeys(next Authenticator, cfg config.Config) (Authenticator, error) {
+	configured := append([]config.DeployKey(nil), cfg.DeployKeys...)
+	for _, digest := range cfg.DeployKeySHA256 {
+		configured = append(configured, config.DeployKey{
+			TenantID: cfg.DeployKeyTenantID,
+			SHA256:   digest,
+		})
+	}
+	if len(configured) == 0 {
+		return next, nil
+	}
+	keys := make([]deployKey, 0, len(configured))
+	for _, item := range configured {
+		tenant := strings.TrimSpace(item.TenantID)
+		if tenant == "" {
+			return nil, fmt.Errorf("deploy-key tenant is required")
+		}
+		raw, err := hex.DecodeString(strings.TrimSpace(item.SHA256))
+		if err != nil || len(raw) != sha256.Size {
+			return nil, fmt.Errorf("deploy-key digests must be 64-character hex SHA-256 values")
+		}
+		var digest [sha256.Size]byte
+		copy(digest[:], raw)
+		keys = append(keys, deployKey{digest: digest, tenant: tenant})
+	}
+	return deployKeyAuth{next: next, keys: keys}, nil
+}
+
+func (a deployKeyAuth) Identify(r *http.Request) Identity {
+	token := bearerToken(r)
+	candidate := sha256.Sum256([]byte(token))
+	matchedTenant := ""
+	for _, key := range a.keys {
+		if subtle.ConstantTimeCompare(candidate[:], key.digest[:]) == 1 {
+			matchedTenant = key.tenant
+		}
+	}
+	if token != "" && matchedTenant != "" {
+		return Identity{
+			Subject:       "deploy-key:" + matchedTenant,
+			TenantID:      matchedTenant,
+			Groups:        []string{matchedTenant + ":writer"},
+			Scopes:        []string{ScopeRead, ScopeWrite},
+			Authenticated: true,
+		}
+	}
+	return a.next.Identify(r)
 }
 
 // ---- access decisions ------------------------------------------------------
