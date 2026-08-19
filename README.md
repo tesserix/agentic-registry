@@ -284,7 +284,8 @@ The architecture *is* the security posture. The registry:
   to an external secret manager;
 - accepts identity **from the edge** — a trusted `X-Forwarded-*` header from a gateway (over
   mTLS / a known gateway only), a Bearer JWT verified against a configurable JWKS/issuer,
-  or a tenant-scoped deploy key whose SHA-256 digest is stored by the server;
+  or an opaque tenant-scoped deploy key sent in `X-Agentic-Registry-Deploy-Key` whose SHA-256
+  digest is stored by the server;
 - applies the **visibility/RBAC filter before any label selector**, so discovery can never
   widen access.
 
@@ -297,6 +298,9 @@ Machine publishers can use `AUTH_DEPLOY_KEYS` with comma-separated
 overlap during rotation. Keep the raw key only in the publisher's secret store;
 the registry compares its digest in constant time and grants only
 `registry:read registry:write` within the configured tenant.
+`Authorization: Bearer` deploy keys remain supported for clients outside a
+JWT-validating mesh, but machine publishers behind the mesh must use the
+dedicated header so opaque credentials are not parsed as JWTs.
 
 Human administration can additionally require two independent Zitadel claims:
 an exact `AUTH_ADMIN_EMAILS` match and the project role named by
