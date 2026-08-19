@@ -27,6 +27,8 @@ const (
 	KindWorkflow  Kind = "Workflow"
 	KindBlueprint Kind = "Blueprint"
 	KindAgent     Kind = "Agent"
+	KindDataset   Kind = "Dataset"
+	KindEvalSuite Kind = "EvalSuite"
 	// KindProject is a devai legacy kind. We accept it on ingest and persist
 	// it as a namespace/label collection rather than a deployable artifact.
 	KindProject Kind = "Project"
@@ -44,7 +46,7 @@ const (
 // AllKinds is the canonical ordered list of catalogable kinds (excludes Project).
 var AllKinds = []Kind{
 	KindSkill, KindTool, KindMCPServer, KindPrompt,
-	KindWorkflow, KindBlueprint, KindAgent,
+	KindWorkflow, KindBlueprint, KindAgent, KindDataset, KindEvalSuite,
 }
 
 // pluralByKind maps a Kind to its REST collection name. MCPServer has two
@@ -58,6 +60,8 @@ var pluralByKind = map[Kind]string{
 	KindWorkflow:  "workflows",
 	KindBlueprint: "blueprints",
 	KindAgent:     "agents",
+	KindDataset:   "datasets",
+	KindEvalSuite: "evalsuites",
 	KindProject:   "projects",
 }
 
