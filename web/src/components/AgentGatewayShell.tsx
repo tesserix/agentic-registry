@@ -4,6 +4,7 @@ import {
   BookOpen,
   Boxes,
   ExternalLink,
+  LogOut,
   Menu,
   Moon,
   ShieldCheck,
@@ -76,6 +77,7 @@ export default function AgentGatewayShell({ children }: { children: React.ReactN
               <div className="truncate text-sm font-semibold text-[var(--ink-strong)]">{profile?.displayName || "Signed-in user"}</div>
               <div className="mt-1 truncate text-[11px] text-[var(--ink-muted)]">{email || "Verified by Zitadel"}</div>
               <div className="mt-4 flex items-center justify-between rounded-xl border border-[var(--ok-soft-bd)] bg-[var(--ok-soft-bg)] px-3 py-2.5 text-[11px] text-[var(--ok-ink)]"><span>Platform role</span><strong>Administrator</strong></div>
+              <a className="btn-ghost mt-3 w-full justify-start" href="/oauth2/sign_out?rd=%2F"><LogOut className="h-4 w-4" />Sign out</a>
             </div>
           </details>
         </header>
