@@ -99,3 +99,26 @@ func TestValidateRejectsUnknownKind(t *testing.T) {
 		t.Errorf("Project (devai alias) should be accepted, got %v", err)
 	}
 }
+
+func TestDatasetAndEvalSuiteKindsHaveStableCollections(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		kind   Kind
+		plural string
+	}{
+		{KindDataset, "datasets"},
+		{KindEvalSuite, "evalsuites"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.plural, func(t *testing.T) {
+			t.Parallel()
+			if got := Plural(tc.kind); got != tc.plural {
+				t.Fatalf("Plural(%q) = %q, want %q", tc.kind, got, tc.plural)
+			}
+			if got, ok := KindForPlural(tc.plural); !ok || got != tc.kind {
+				t.Fatalf("KindForPlural(%q) = %q, %v", tc.plural, got, ok)
+			}
+		})
+	}
+}
