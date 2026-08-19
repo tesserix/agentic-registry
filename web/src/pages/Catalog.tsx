@@ -5,6 +5,7 @@ import { Search, SlidersHorizontal, Loader2, PackageOpen, Plus, Upload } from "l
 import { api, KINDS, type Artifact } from "../lib/api";
 import ArtifactCard from "../components/ArtifactCard";
 import ArtifactEditor from "../components/ArtifactEditor";
+import { AdminOnly } from "../lib/session";
 
 type Doc = Record<string, unknown>;
 
@@ -144,29 +145,31 @@ export default function Catalog() {
             {count}
             {nextCursor ? "+" : ""} {count === 1 ? "artifact" : "artifacts"}
           </span>
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".yaml,.yml,.json,application/json,application/x-yaml,text/yaml,text/plain"
-            className="hidden"
-            onChange={(e) => onUpload(e.target.files?.[0])}
-          />
-          <button
-            className="btn-secondary"
-            onClick={() => fileInput.current?.click()}
-            title={`Upload a ${meta.kind} manifest (YAML or JSON)`}
-          >
-            <Upload className="w-4 h-4" /> Upload
-          </button>
-          <button
-            className="btn-primary"
-            onClick={() => {
-              setSeed(null);
-              setEditorOpen(true);
-            }}
-          >
-            <Plus className="w-4 h-4" /> New {meta.kind}
-          </button>
+          <AdminOnly>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".yaml,.yml,.json,application/json,application/x-yaml,text/yaml,text/plain"
+              className="hidden"
+              onChange={(e) => onUpload(e.target.files?.[0])}
+            />
+            <button
+              className="btn-secondary"
+              onClick={() => fileInput.current?.click()}
+              title={`Upload a ${meta.kind} manifest (YAML or JSON)`}
+            >
+              <Upload className="w-4 h-4" /> Upload
+            </button>
+            <button
+              className="btn-primary"
+              onClick={() => {
+                setSeed(null);
+                setEditorOpen(true);
+              }}
+            >
+              <Plus className="w-4 h-4" /> New {meta.kind}
+            </button>
+          </AdminOnly>
         </div>
       </div>
 
@@ -246,21 +249,23 @@ export default function Catalog() {
         )}
       </div>
 
-      <ArtifactEditor
-        kind={meta.kind}
-        plural={plural}
-        open={editorOpen}
-        seed={seed}
-        onClose={() => {
-          setEditorOpen(false);
-          setSeed(null);
-        }}
-        onCreated={() => {
-          setEditorOpen(false);
-          setSeed(null);
-          setReload((n) => n + 1);
-        }}
-      />
+      <AdminOnly>
+        <ArtifactEditor
+          kind={meta.kind}
+          plural={plural}
+          open={editorOpen}
+          seed={seed}
+          onClose={() => {
+            setEditorOpen(false);
+            setSeed(null);
+          }}
+          onCreated={() => {
+            setEditorOpen(false);
+            setSeed(null);
+            setReload((n) => n + 1);
+          }}
+        />
+      </AdminOnly>
     </div>
   );
 }

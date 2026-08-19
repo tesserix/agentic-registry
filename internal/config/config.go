@@ -34,6 +34,12 @@ type Config struct {
 	AuthAudience string // expected "aud" claim (optional)
 	GroupsClaim  string // JWT claim carrying group/role membership
 	TrustedProxy bool   // trust X-Forwarded-* identity headers
+	// AdminEmails and AdminRole form a two-factor human administration policy:
+	// a human must have both an exact allowlisted email and the configured IdP
+	// project role. Machine identities and tenant deploy keys remain governed by
+	// scopes and tenant roles instead.
+	AdminEmails []string
+	AdminRole   string
 	// AnonymousRole is the effective role granted to anonymous (no-auth-mode)
 	// callers: "admin" (current/default behavior — full read+write, what local
 	// dev and the in-cluster bootstrap SA rely on) or "read" (read-only;
@@ -101,6 +107,7 @@ func Load() Config {
 		AuthAudience: env("AUTH_AUDIENCE", ""),
 		GroupsClaim:  env("AUTH_GROUPS_CLAIM", "groups"),
 		TrustedProxy: env("AUTH_TRUSTED_PROXY", "false") == "true",
+		AdminRole:    strings.TrimSpace(env("AUTH_ADMIN_ROLE", "")),
 		// Default "admin" preserves current behavior (see field doc); set to
 		// "read" in chart values to downgrade anonymous callers to read-only.
 		AnonymousRole:     env("AUTH_ANONYMOUS_ROLE", "admin"),
@@ -112,6 +119,13 @@ func Load() Config {
 		AutoVersion:       env("AUTO_VERSION", "true") == "true",
 		SigningKey:        env("SIGNING_PRIVATE_KEY", ""),
 		SigningDev:        env("SIGNING_DEV", "false") == "true",
+	}
+	if emails := env("AUTH_ADMIN_EMAILS", ""); emails != "" {
+		for _, email := range strings.Split(emails, ",") {
+			if email = strings.ToLower(strings.TrimSpace(email)); email != "" {
+				c.AdminEmails = append(c.AdminEmails, email)
+			}
+		}
 	}
 	if digests := env("AUTH_DEPLOY_KEY_SHA256", ""); digests != "" {
 		for _, digest := range strings.Split(digests, ",") {

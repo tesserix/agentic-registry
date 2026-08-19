@@ -4,6 +4,7 @@ import { ArrowLeft, Loader2, Tag, ShieldCheck, ShieldAlert, Copy, Check, Fingerp
 import { api, KINDS, type Artifact, type Revision, visibilityClass, userLabels } from "../lib/api";
 import { verifyEd25519 } from "../lib/verify";
 import ArtifactEditor from "../components/ArtifactEditor";
+import { AdminOnly, useRegistrySession } from "../lib/session";
 // React Flow is heavy — load it only when viewing a Workflow/Blueprint.
 const FlowCanvas = lazy(() => import("../components/FlowCanvas"));
 
@@ -14,6 +15,7 @@ interface Version {
 }
 
 export default function ArtifactDetail() {
+	const session = useRegistrySession();
   const { plural = "skills", name = "" } = useParams();
   // Artifacts live in a namespace (often not "default" — e.g. "devai"). The
   // catalog list browses every readable namespace and carries the namespace in
@@ -110,9 +112,11 @@ export default function ArtifactDetail() {
             </span>
           )}
           <span className={`chip ${visibilityClass(m.visibility)}`}>{m.visibility}</span>
-          <button className="btn-secondary" onClick={() => setEditOpen(true)}>
-            <Pencil className="w-3.5 h-3.5" /> Edit
-          </button>
+          <AdminOnly>
+            <button className="btn-secondary" onClick={() => setEditOpen(true)}>
+              <Pencil className="w-3.5 h-3.5" /> Edit
+            </button>
+          </AdminOnly>
         </div>
       </div>
 
@@ -129,7 +133,7 @@ export default function ArtifactDetail() {
       {(meta.kind === "Workflow" || meta.kind === "Blueprint") && (
         <div className="mt-6">
           <Suspense fallback={<div className="card flex items-center justify-center" style={{ height: 480, color: "var(--ink-muted)" }}><Loader2 className="w-4 h-4 spin" /></div>}>
-            <FlowCanvas key={m.digest} artifact={a} plural={plural} kind={meta.kind} onSaved={() => setReload((n) => n + 1)} />
+            <FlowCanvas key={m.digest} artifact={a} plural={plural} kind={meta.kind} readOnly={!session.admin} onSaved={() => setReload((n) => n + 1)} />
           </Suspense>
         </div>
       )}
@@ -261,30 +265,32 @@ export default function ArtifactDetail() {
         </aside>
       </div>
 
-      <ArtifactEditor
-        kind={meta.kind}
-        plural={plural}
-        open={editOpen}
-        initial={{
-          apiVersion: a.apiVersion,
-          kind: a.kind,
-          metadata: {
-            name: m.name,
-            namespace: m.namespace,
-            // Blank so saving auto-increments to the next version (a released
-            // version is immutable). User can type one to pin.
-            tag: "",
-            visibility: m.visibility,
-            labels: userLabels(m.labels),
-          },
-          spec: a.spec ?? {},
-        }}
-        onClose={() => setEditOpen(false)}
-        onCreated={() => {
-          setEditOpen(false);
-          setReload((n) => n + 1);
-        }}
-      />
+      <AdminOnly>
+        <ArtifactEditor
+          kind={meta.kind}
+          plural={plural}
+          open={editOpen}
+          initial={{
+            apiVersion: a.apiVersion,
+            kind: a.kind,
+            metadata: {
+              name: m.name,
+              namespace: m.namespace,
+              // Blank so saving auto-increments to the next version (a released
+              // version is immutable). User can type one to pin.
+              tag: "",
+              visibility: m.visibility,
+              labels: userLabels(m.labels),
+            },
+            spec: a.spec ?? {},
+          }}
+          onClose={() => setEditOpen(false)}
+          onCreated={() => {
+            setEditOpen(false);
+            setReload((n) => n + 1);
+          }}
+        />
+      </AdminOnly>
     </div>
   );
 }

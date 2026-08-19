@@ -91,6 +91,21 @@ Bearer keys remain only in the publishers' secret stores. Add a second entry
 for the same tenant during rotation, update publishers, then remove the old
 digest after the overlap window.
 
+For Zitadel-backed human administration, configure `AUTH_MODE=jwks` (or
+`trusted-header` only behind a network-contained OAuth proxy), the expected
+issuer/JWKS/audience, and all three policy values below:
+
+```bash
+AUTH_GROUPS_CLAIM=urn:zitadel:iam:org:project:roles
+AUTH_ADMIN_ROLE=agentregistry.admin
+AUTH_ADMIN_EMAILS=samyak.rout@gmail.com,mahesh.sangawar@gmail.com
+```
+
+`AUTH_ADMIN_EMAILS` and `AUTH_ADMIN_ROLE` must be configured together or the
+process refuses to start. OIDC client secrets stay in GCP Secret Manager and
+reach only the OAuth proxy through External Secrets; they are not Registry
+configuration.
+
 ## Tesserix GKE (ArgoCD)
 
 This deployment follows the platform guardrails — **no manual `kubectl apply`**.

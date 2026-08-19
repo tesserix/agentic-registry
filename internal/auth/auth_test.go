@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/tesserix/agentic-registry/internal/config"
@@ -127,6 +128,109 @@ func TestTrustedHeaderRequiresTrustedProxy(t *testing.T) {
 	}
 	if _, err := New(config.Config{AuthMode: "trusted-header", TrustedProxy: true}); err != nil {
 		t.Fatalf("trusted-header with AUTH_TRUSTED_PROXY=true must build: %v", err)
+	}
+}
+
+func TestHumanAdminRequiresAllowlistedEmailAndZitadelRole(t *testing.T) {
+	a, err := New(config.Config{
+		AuthMode:     "trusted-header",
+		TrustedProxy: true,
+		AdminEmails:  []string{"samyak.rout@gmail.com", "mahesh.sangawar@gmail.com"},
+		AdminRole:    "agentregistry.admin",
+	})
+	if err != nil {
+		t.Fatalf("trusted-header admin policy must build: %v", err)
+	}
+
+	for name, tc := range map[string]struct {
+		email     string
+		groups    string
+		wantAdmin bool
+	}{
+		"allowlisted role holder":     {email: "Samyak.Rout@gmail.com", groups: "agentregistry.admin", wantAdmin: true},
+		"allowlisted without role":    {email: "mahesh.sangawar@gmail.com", groups: "tesserix:writer", wantAdmin: false},
+		"role holder not allowlisted": {email: "attacker@example.com", groups: "agentregistry.admin,registry:admin,tesserix:writer", wantAdmin: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, reqErr := http.NewRequest(http.MethodGet, "/v0/session", nil)
+			if reqErr != nil {
+				t.Fatalf("request: %v", reqErr)
+			}
+			req.Header.Set("X-Forwarded-User", "zitadel-user")
+			req.Header.Set("X-Forwarded-Email", tc.email)
+			req.Header.Set("X-Forwarded-Groups", tc.groups)
+
+			id := a.Identify(req)
+			if got := CanAdmin(id); got != tc.wantAdmin {
+				t.Fatalf("CanAdmin() = %v, want %v; identity=%#v", got, tc.wantAdmin, id)
+			}
+			if got := CanWrite(id, obj(v1alpha1.VisibilityPrivate, "tesserix")); got != tc.wantAdmin {
+				t.Fatalf("CanWrite() = %v, want %v; identity=%#v", got, tc.wantAdmin, id)
+			}
+		})
+	}
+}
+
+func TestHumanAdminPolicyRequiresBothConfigurationValues(t *testing.T) {
+	for name, cfg := range map[string]config.Config{
+		"emails without role": {
+			AuthMode: "anonymous", AdminEmails: []string{"samyak.rout@gmail.com"},
+		},
+		"role without emails": {
+			AuthMode: "anonymous", AdminRole: "agentregistry.admin",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := New(cfg); err == nil {
+				t.Fatal("incomplete human-admin policy must be rejected")
+			}
+		})
+	}
+}
+
+func TestHumanAdminPolicyRejectsAnonymousAuthMode(t *testing.T) {
+	_, err := New(config.Config{
+		AuthMode:    "anonymous",
+		AdminEmails: []string{"samyak.rout@gmail.com"},
+		AdminRole:   "agentregistry.admin",
+	})
+	if err == nil {
+		t.Fatal("human-admin policy must not create a false security boundary in anonymous mode")
+	}
+}
+
+func TestHumanAdminPolicyDoesNotReplaceTenantDeployKeys(t *testing.T) {
+	a, err := New(config.Config{
+		AuthMode:          "trusted-header",
+		TrustedProxy:      true,
+		AdminEmails:       []string{"samyak.rout@gmail.com"},
+		AdminRole:         "agentregistry.admin",
+		DeployKeySHA256:   []string{deployKeyDigest("github-publisher")},
+		DeployKeyTenantID: "kora",
+	})
+	if err != nil {
+		t.Fatalf("combined human and machine policy must build: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "/v0/apply", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer github-publisher")
+
+	id := a.Identify(req)
+	if !CanWrite(id, obj(v1alpha1.VisibilityPrivate, "kora")) || CanAdmin(id) {
+		t.Fatalf("deploy key must remain a tenant writer, got %#v", id)
+	}
+}
+
+func TestZitadelProjectRoleClaimUsesRoleNames(t *testing.T) {
+	claim := map[string]interface{}{
+		"agentregistry.admin": map[string]interface{}{"org-id": "tesserix"},
+		"agentregistry.read":  map[string]interface{}{"org-id": "tesserix"},
+	}
+	want := []string{"agentregistry.admin", "agentregistry.read"}
+	if got := extractGroups(claim); !reflect.DeepEqual(got, want) {
+		t.Fatalf("extractGroups() = %#v, want %#v", got, want)
 	}
 }
 

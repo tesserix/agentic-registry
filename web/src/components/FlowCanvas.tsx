@@ -55,11 +55,13 @@ export default function FlowCanvas({
   plural,
   kind,
   onSaved,
+  readOnly = false,
 }: {
   artifact: Artifact;
   plural: string;
   kind: string;
   onSaved?: () => void;
+  readOnly?: boolean;
 }) {
   const init = useMemo(() => toReactFlow(artifact.spec), [artifact]);
   const [nodes, setNodes, onNodesChange] = useNodesState(init.nodes);
@@ -169,22 +171,25 @@ export default function FlowCanvas({
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        onNodesChange={(c) => {
+        onNodesChange={readOnly ? undefined : (c) => {
           onNodesChange(c);
           touch();
         }}
-        onEdgesChange={(c) => {
+        onEdgesChange={readOnly ? undefined : (c) => {
           onEdgesChange(c);
           touch();
         }}
-        onConnect={onConnect}
-        onNodeClick={(_, n) => setSelected(n.id)}
+        onConnect={readOnly ? undefined : onConnect}
+        onNodeClick={readOnly ? undefined : (_, n) => setSelected(n.id)}
         onPaneClick={() => setSelected(null)}
         colorMode={dark ? "dark" : "light"}
         connectionMode={ConnectionMode.Loose}
         connectionLineStyle={{ stroke: FLOW_EDGE_COLOR, strokeWidth: 2 }}
         connectionRadius={32}
-        deleteKeyCode={["Backspace", "Delete"]}
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
+        elementsSelectable={!readOnly}
+        deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
         fitView
         proOptions={{ hideAttribution: true }}
       >
@@ -197,19 +202,23 @@ export default function FlowCanvas({
           <div className="flow-toolbar">
             <WorkflowIcon className="w-4 h-4" style={{ color: "var(--flow-accent)" }} />
             <span className="flow-toolbar-title">{kind} flow</span>
-            <button className="flow-btn" onClick={addStep}>
-              <Plus className="w-3.5 h-3.5" /> Add step
-            </button>
-            <button className="flow-btn flow-btn-primary" onClick={save} disabled={saving || !dirty}>
-              {saving ? <Loader2 className="w-3.5 h-3.5 spin" /> : saved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
-              {saved && !dirty ? "Saved" : "Save"}
-            </button>
+            {!readOnly && (
+              <>
+                <button className="flow-btn" onClick={addStep}>
+                  <Plus className="w-3.5 h-3.5" /> Add step
+                </button>
+                <button className="flow-btn flow-btn-primary" onClick={save} disabled={saving || !dirty}>
+                  {saving ? <Loader2 className="w-3.5 h-3.5 spin" /> : saved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
+                  {saved && !dirty ? "Saved" : "Save"}
+                </button>
+              </>
+            )}
           </div>
           {err && <div className="flow-error">{err}</div>}
         </Panel>
 
         {/* Inspector for the selected step (human intervention) */}
-        {selNode && (
+        {!readOnly && selNode && (
           <Panel position="top-right">
             <div className="flow-inspector">
               <div className="label-eyebrow mb-2">Step</div>

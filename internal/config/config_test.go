@@ -31,3 +31,17 @@ func TestLoadParsesTenantScopedDeployKeys(t *testing.T) {
 		t.Fatalf("unexpected tenant-scoped deploy keys: %#v", cfg.DeployKeys)
 	}
 }
+
+func TestLoadParsesHumanAdminPolicy(t *testing.T) {
+	t.Setenv("AUTH_ADMIN_EMAILS", " samyak.rout@gmail.com, MAHESH.SANGAWAR@gmail.com ,, ")
+	t.Setenv("AUTH_ADMIN_ROLE", " agentregistry.admin ")
+
+	cfg := Load()
+	wantEmails := []string{"samyak.rout@gmail.com", "mahesh.sangawar@gmail.com"}
+	if !reflect.DeepEqual(cfg.AdminEmails, wantEmails) {
+		t.Fatalf("unexpected admin emails: %#v", cfg.AdminEmails)
+	}
+	if cfg.AdminRole != "agentregistry.admin" {
+		t.Fatalf("unexpected admin role: %q", cfg.AdminRole)
+	}
+}

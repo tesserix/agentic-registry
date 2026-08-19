@@ -30,3 +30,28 @@ describe("MCP gateway API", () => {
     );
   });
 });
+
+describe("registry session API", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("loads the server-authorized administration capability", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          authenticated: true,
+          email: "samyak.rout@gmail.com",
+          admin: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const session = await api.session();
+
+    expect(session.admin).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("/v0/session", {
+      headers: { Accept: "application/json" },
+    });
+  });
+});

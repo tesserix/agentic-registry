@@ -7,6 +7,7 @@ import MCPGatewayAccess from "./pages/MCPGatewayAccess";
 import MCPGatewayHome from "./pages/MCPGatewayHome";
 import MCPGatewayServer from "./pages/MCPGatewayServer";
 import { isMcpGatewayHost } from "./lib/mcpGateway";
+import { RegistrySessionProvider } from "./lib/session";
 
 function MCPGatewayApp() {
   return (
@@ -28,13 +29,15 @@ export default function App() {
   }
 
   return (
-    <Shell>
-      <Routes>
-        <Route path="/" element={<Navigate to="/skills" replace />} />
-        <Route path="/:plural" element={<Catalog />} />
-        <Route path="/:plural/:name" element={<ArtifactDetail />} />
-        <Route path="*" element={<Navigate to="/skills" replace />} />
-      </Routes>
-    </Shell>
+    <RegistrySessionProvider>
+      <Shell>
+        <Routes>
+          <Route path="/" element={<Navigate to="/skills" replace />} />
+          <Route path="/:plural" element={<Catalog />} />
+          <Route path="/:plural/:name" element={<ArtifactDetail />} />
+          <Route path="*" element={<Navigate to="/skills" replace />} />
+        </Routes>
+      </Shell>
+    </RegistrySessionProvider>
   );
 }

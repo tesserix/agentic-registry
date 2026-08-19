@@ -100,6 +100,12 @@ export interface Health {
   platform: string;
 }
 
+export interface Session {
+  authenticated: boolean;
+  email: string;
+  admin: boolean;
+}
+
 export interface RegistryCondition {
   type: string;
   status: "True" | "False";
@@ -123,6 +129,8 @@ export interface ResolvedMCPServer {
 
 export const api = {
   health: () => get<Health>("/healthz"),
+
+  session: () => get<Session>("/v0/session"),
 
   list: (plural: string, opts: { namespace?: string; labelSelector?: string; search?: string } = {}) => {
     const q = new URLSearchParams();

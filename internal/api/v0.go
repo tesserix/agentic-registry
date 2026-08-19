@@ -35,6 +35,10 @@ func (s *Server) mountV0(r chi.Router) {
 
 		// Public signing key for verifying digest attestations.
 		r.Get("/signing-key", s.signingKey)
+		// Safe browser capability discovery. This exposes no token, group, scope,
+		// or tenant data; the UI uses it only to hide mutation controls from
+		// callers who are not global registry administrators.
+		r.Get("/session", s.v0Session)
 
 		// Runtime export — render the catalog into control-plane config the
 		// in-cluster sync Jobs apply. agentgateway: all MCP servers → routing
@@ -68,6 +72,15 @@ func (s *Server) mountV0(r chi.Router) {
 			r.Get("/{name}/{tag}", s.v0Get)
 			r.Delete("/{name}/{tag}", s.v0Delete)
 		})
+	})
+}
+
+func (s *Server) v0Session(w http.ResponseWriter, r *http.Request) {
+	id := identity(r)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"authenticated": id.Authenticated,
+		"email":         id.Email,
+		"admin":         auth.CanAdmin(id),
 	})
 }
 
