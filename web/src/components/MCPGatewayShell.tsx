@@ -8,8 +8,13 @@ import {
   Moon,
   ShieldCheck,
   Sun,
+  UserRound,
   X,
 } from "lucide-react";
+import {
+  loadMcpGatewayProfile,
+  type McpGatewayProfile,
+} from "../lib/mcpGateway";
 import Logo from "./Logo";
 
 type Props = { children: React.ReactNode };
@@ -24,7 +29,22 @@ export default function MCPGatewayShell({ children }: Props) {
     document.documentElement.classList.contains("dark"),
   );
   const [navOpen, setNavOpen] = useState(false);
+  const [profile, setProfile] = useState<McpGatewayProfile | null>(null);
   const location = useLocation();
+
+  useEffect(() => {
+    let active = true;
+    loadMcpGatewayProfile()
+      .then((sessionProfile) => {
+        if (active) setProfile(sessionProfile);
+      })
+      .catch(() => {
+        if (active) setProfile(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     setNavOpen(false);
@@ -151,6 +171,50 @@ export default function MCPGatewayShell({ children }: Props) {
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--ok)]" />
             mcp.tesserix.app
           </div>
+          <details className="group relative">
+            <summary
+              className="flex cursor-pointer list-none items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5 pr-2.5 text-left transition-colors hover:bg-[var(--surface-raised)] [&::-webkit-details-marker]:hidden"
+              aria-label="Open user profile"
+            >
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--accent-soft)] text-[11px] font-bold text-[var(--accent)]">
+                {profile?.initials || <UserRound className="h-4 w-4" />}
+              </span>
+              <span className="hidden min-w-0 sm:block">
+                <span className="block max-w-44 truncate text-[12px] font-semibold text-[var(--ink-strong)]">
+                  {profile?.displayName || "Signed-in user"}
+                </span>
+                <span className="block text-[10px] text-[var(--ink-muted)]">
+                  Administrator
+                </span>
+              </span>
+            </summary>
+            <div className="absolute right-0 z-30 mt-2 w-72 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 shadow-xl">
+              <div className="flex items-center gap-3">
+                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]">
+                  {profile?.initials || <UserRound className="h-5 w-5" />}
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold text-[var(--ink-strong)]">
+                    {profile?.displayName || "Signed-in user"}
+                  </span>
+                  <span className="block truncate text-[11px] text-[var(--ink-muted)]">
+                    {profile?.email || "Verified by Zitadel"}
+                  </span>
+                </span>
+              </div>
+              <div className="mt-4 flex items-center justify-between rounded-xl border border-[var(--ok-soft-bd)] bg-[var(--ok-soft-bg)] px-3 py-2.5">
+                <span className="text-[11px] font-medium text-[var(--ok-ink)]">
+                  Platform role
+                </span>
+                <span className="text-[11px] font-bold text-[var(--ok-ink)]">
+                  Administrator
+                </span>
+              </div>
+              <p className="mt-3 text-[10px] leading-4 text-[var(--ink-muted)]">
+                Session identity is verified by Zitadel and protected by the gateway allowlist.
+              </p>
+            </div>
+          </details>
         </header>
         <main>{children}</main>
       </div>

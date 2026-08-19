@@ -2,11 +2,36 @@ export type McpClient =
   | "codex"
   | "cursor"
   | "claude-code"
-  | "vscode"
-  | "librechat";
+  | "vscode";
+
+export const MCP_CLIENTS = [
+  { id: "codex", label: "Codex" },
+  { id: "claude-code", label: "Claude Code" },
+  { id: "cursor", label: "Cursor" },
+  { id: "vscode", label: "VS Code" },
+] as const satisfies readonly { id: McpClient; label: string }[];
 
 export const MCP_GATEWAY_ORIGIN = "https://mcp.tesserix.app";
 export const AGENTGATEWAY_PROJECT_ID = "386889024519799084";
+
+export interface McpGatewayUserInfo {
+  user: string;
+  email: string;
+  groups?: string[];
+  preferredUsername?: string;
+}
+
+export interface McpGatewayProfile {
+  displayName: string;
+  email: string;
+  initials: string;
+  role: "Administrator";
+}
+
+type Requester = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
 
 export function isMcpGatewayHost(hostname: string): boolean {
   return hostname.toLowerCase() === "mcp.tesserix.app";
@@ -26,6 +51,42 @@ export function serverDisplayName(serverName: string): string {
     .join(" ");
 }
 
+export function profileFromUserInfo(
+  userInfo: McpGatewayUserInfo,
+): McpGatewayProfile {
+  const email = userInfo.email.trim();
+  if (!email) throw new Error("OAuth session did not include an email");
+
+  const displayName = userInfo.preferredUsername?.trim() || email;
+  const nameParts = displayName
+    .replace(/@.*$/, "")
+    .split(/[\s._-]+/)
+    .filter(Boolean);
+  const initials = nameParts
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+
+  return {
+    displayName,
+    email,
+    initials: initials || email.charAt(0).toUpperCase(),
+    role: "Administrator",
+  };
+}
+
+export async function loadMcpGatewayProfile(
+  request: Requester = fetch,
+): Promise<McpGatewayProfile> {
+  const response = await request("/oauth2/userinfo", {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error("Unable to load OAuth session profile");
+  return profileFromUserInfo(
+    (await response.json()) as McpGatewayUserInfo,
+  );
+}
+
 export function installConfig(
   client: McpClient,
   serverName: string,
@@ -39,10 +100,6 @@ export function installConfig(
 
   if (client === "claude-code") {
     return `claude mcp add --transport http ${serverName} ${endpoint} --header "Authorization: Bearer \${TESSERIX_MCP_TOKEN}"`;
-  }
-
-  if (client === "librechat") {
-    return `mcpServers:\n  ${serverName}:\n    type: streamable-http\n    url: ${endpoint}\n    headers:\n      Authorization: "Bearer \${TESSERIX_MCP_TOKEN}"`;
   }
 
   const rootKey = client === "vscode" ? "servers" : "mcpServers";

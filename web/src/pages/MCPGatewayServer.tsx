@@ -19,17 +19,10 @@ import {
   gatewayEndpoint,
   installConfig,
   MCP_GATEWAY_ORIGIN,
+  MCP_CLIENTS,
   serverDisplayName,
   type McpClient,
 } from "../lib/mcpGateway";
-
-const CLIENTS: { id: McpClient; label: string }[] = [
-  { id: "codex", label: "Codex" },
-  { id: "claude-code", label: "Claude Code" },
-  { id: "cursor", label: "Cursor" },
-  { id: "vscode", label: "VS Code" },
-  { id: "librechat", label: "LibreChat" },
-];
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -227,7 +220,7 @@ export default function MCPGatewayServer() {
               </p>
             </div>
             <div className="flex gap-1 overflow-x-auto border-b border-[var(--border-subtle)] px-4 pt-3">
-              {CLIENTS.map((item) => (
+              {MCP_CLIENTS.map((item) => (
                 <button
                   key={item.id}
                   onClick={() => {
