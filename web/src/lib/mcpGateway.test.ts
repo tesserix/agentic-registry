@@ -3,11 +3,21 @@ import {
   gatewayEndpoint,
   installConfig,
   isMcpGatewayHost,
+  MCP_CLIENTS,
   serverDisplayName,
   tokenRequestCommand,
 } from "./mcpGateway";
 
 describe("MCP gateway presentation", () => {
+  it("offers only supported agent clients", () => {
+    expect(MCP_CLIENTS).toEqual([
+      { id: "codex", label: "Codex" },
+      { id: "claude-code", label: "Claude Code" },
+      { id: "cursor", label: "Cursor" },
+      { id: "vscode", label: "VS Code" },
+    ]);
+  });
+
   it("enables the product UI only on the MCP gateway host", () => {
     expect(isMcpGatewayHost("mcp.tesserix.app")).toBe(true);
     expect(isMcpGatewayHost("aregistry.tesserix.app")).toBe(false);
@@ -48,7 +58,6 @@ describe("MCP gateway presentation", () => {
     const configs = {
       "claude-code": "claude mcp add --transport http",
       vscode: '"servers"',
-      librechat: "mcpServers:",
     } as const;
 
     for (const [client, marker] of Object.entries(configs)) {

@@ -105,7 +105,7 @@ export default function MCPGatewayAccess() {
                     Configure your agent client
                   </h3>
                   <p className="mt-1 text-[12px] text-[var(--ink-soft)]">
-                    Open any server in the directory and copy its Codex, Claude Code, Cursor, VS Code, or LibreChat configuration.
+                    Open any server in the directory and copy its Codex, Claude Code, Cursor, or VS Code configuration.
                   </p>
                 </div>
               </li>

@@ -2,8 +2,14 @@ export type McpClient =
   | "codex"
   | "cursor"
   | "claude-code"
-  | "vscode"
-  | "librechat";
+  | "vscode";
+
+export const MCP_CLIENTS = [
+  { id: "codex", label: "Codex" },
+  { id: "claude-code", label: "Claude Code" },
+  { id: "cursor", label: "Cursor" },
+  { id: "vscode", label: "VS Code" },
+] as const satisfies readonly { id: McpClient; label: string }[];
 
 export const MCP_GATEWAY_ORIGIN = "https://mcp.tesserix.app";
 export const AGENTGATEWAY_PROJECT_ID = "386889024519799084";
@@ -39,10 +45,6 @@ export function installConfig(
 
   if (client === "claude-code") {
     return `claude mcp add --transport http ${serverName} ${endpoint} --header "Authorization: Bearer \${TESSERIX_MCP_TOKEN}"`;
-  }
-
-  if (client === "librechat") {
-    return `mcpServers:\n  ${serverName}:\n    type: streamable-http\n    url: ${endpoint}\n    headers:\n      Authorization: "Bearer \${TESSERIX_MCP_TOKEN}"`;
   }
 
   const rootKey = client === "vscode" ? "servers" : "mcpServers";
