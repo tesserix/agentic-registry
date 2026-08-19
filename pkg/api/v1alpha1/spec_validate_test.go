@@ -90,3 +90,30 @@ func TestValidateSpec_Graph(t *testing.T) {
 		t.Fatal("node with unknown kind should fail")
 	}
 }
+
+func TestGatewayResourceValidationRejectsUnsafeKubernetesObjects(t *testing.T) {
+	tests := map[string]map[string]interface{}{
+		"unknown kind": {
+			"apiVersion": "v1", "kind": "Secret",
+			"metadata": map[string]interface{}{"name": "provider-key"},
+			"spec":     map[string]interface{}{"token": "not-allowed"},
+		},
+		"wrong namespace": {
+			"apiVersion": "agentgateway.dev/v1alpha1", "kind": "AgentgatewayBackend",
+			"metadata": map[string]interface{}{"name": "openai", "namespace": "kube-system"},
+			"spec":     map[string]interface{}{"ai": map[string]interface{}{}},
+		},
+		"secret material": {
+			"apiVersion": "agentgateway.dev/v1alpha1", "kind": "AgentgatewayBackend",
+			"metadata": map[string]interface{}{"name": "openai"},
+			"spec":     map[string]interface{}{"apiKey": "plaintext"},
+		},
+	}
+	for name, spec := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateSpec(Kind("GatewayResource"), spec); err == nil {
+				t.Fatalf("expected unsafe GatewayResource to be rejected: %#v", spec)
+			}
+		})
+	}
+}

@@ -97,7 +97,11 @@ func bearerToken(r *http.Request) string {
 	if len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
 		return strings.TrimSpace(h[7:])
 	}
-	return ""
+	// oauth2-proxy forwards the authenticated browser's access token in this
+	// header when it is the trusted edge. The token still undergoes the same
+	// signature, issuer, audience, algorithm, and expiry validation as a direct
+	// Authorization bearer token; this header is transport, not trust.
+	return strings.TrimSpace(r.Header.Get("X-Forwarded-Access-Token"))
 }
 
 func extractGroups(v interface{}) []string {

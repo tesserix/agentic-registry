@@ -45,6 +45,15 @@ func (s *Server) mountV0(r chi.Router) {
 		// (AgentgatewayBackend + HTTPRoute). kagent export is per-agent, mounted
 		// in the collection route below.
 		r.Get("/export/agentgateway", s.v0ExportAgentgateway)
+
+		// Tesserix AgentGateway desired state. Solo's XDS UI remains the runtime
+		// traffic view; these endpoints are the authenticated write boundary.
+		r.Route("/agentgateway", func(r chi.Router) {
+			r.Get("/resources", s.v0AgentgatewayList)
+			r.Post("/import", s.v0AgentgatewayImport)
+			r.Put("/{resourceType}/{name}", s.v0AgentgatewayPut)
+			r.Delete("/{resourceType}/{name}", s.v0AgentgatewayDelete)
+		})
 		// kagent: every (optionally label-filtered) agent → Agent + ToolServer
 		// CRs, applied by the kagent agent-sync Job.
 		r.Get("/export/kagent", s.v0ExportKagentAll)

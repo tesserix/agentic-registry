@@ -8,6 +8,22 @@ import MCPGatewayHome from "./pages/MCPGatewayHome";
 import MCPGatewayServer from "./pages/MCPGatewayServer";
 import { isMcpGatewayHost } from "./lib/mcpGateway";
 import { RegistrySessionProvider } from "./lib/session";
+import { isAgentGatewayHost } from "./lib/agentGateway";
+import AgentGatewayShell from "./components/AgentGatewayShell";
+import AgentGatewayHome from "./pages/AgentGatewayHome";
+
+function AgentGatewayApp() {
+  return (
+    <RegistrySessionProvider>
+      <AgentGatewayShell>
+        <Routes>
+          <Route path="/" element={<AgentGatewayHome />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AgentGatewayShell>
+    </RegistrySessionProvider>
+  );
+}
 
 function MCPGatewayApp() {
   return (
@@ -23,6 +39,10 @@ function MCPGatewayApp() {
 }
 
 export default function App() {
+  const agentgatewayPreview = import.meta.env.VITE_AGENTGATEWAY_UI === "true";
+  if (agentgatewayPreview || isAgentGatewayHost(window.location.hostname)) {
+    return <AgentGatewayApp />;
+  }
   const gatewayPreview = import.meta.env.VITE_MCP_GATEWAY_UI === "true";
   if (gatewayPreview || isMcpGatewayHost(window.location.hostname)) {
     return <MCPGatewayApp />;

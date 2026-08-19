@@ -29,6 +29,10 @@ const (
 	KindAgent     Kind = "Agent"
 	KindDataset   Kind = "Dataset"
 	KindEvalSuite Kind = "EvalSuite"
+	// KindGatewayResource is one validated AgentGateway Kubernetes object.
+	// It is stored as desired state and rendered only by the allowlisted
+	// AgentGateway exporter; it is never a general Kubernetes manifest kind.
+	KindGatewayResource Kind = "GatewayResource"
 	// KindProject is a devai legacy kind. We accept it on ingest and persist
 	// it as a namespace/label collection rather than a deployable artifact.
 	KindProject Kind = "Project"
@@ -47,22 +51,24 @@ const (
 var AllKinds = []Kind{
 	KindSkill, KindTool, KindMCPServer, KindPrompt,
 	KindWorkflow, KindBlueprint, KindAgent, KindDataset, KindEvalSuite,
+	KindGatewayResource,
 }
 
 // pluralByKind maps a Kind to its REST collection name. MCPServer has two
 // aliases: "mcpservers" (solo aregistry's real plural) and "servers" (devai's
 // client name). Both resolve to KindMCPServer; we emit "mcpservers".
 var pluralByKind = map[Kind]string{
-	KindSkill:     "skills",
-	KindTool:      "tools",
-	KindMCPServer: "mcpservers",
-	KindPrompt:    "prompts",
-	KindWorkflow:  "workflows",
-	KindBlueprint: "blueprints",
-	KindAgent:     "agents",
-	KindDataset:   "datasets",
-	KindEvalSuite: "evalsuites",
-	KindProject:   "projects",
+	KindSkill:           "skills",
+	KindTool:            "tools",
+	KindMCPServer:       "mcpservers",
+	KindPrompt:          "prompts",
+	KindWorkflow:        "workflows",
+	KindBlueprint:       "blueprints",
+	KindAgent:           "agents",
+	KindDataset:         "datasets",
+	KindEvalSuite:       "evalsuites",
+	KindGatewayResource: "gatewayresources",
+	KindProject:         "projects",
 }
 
 var kindByPlural = func() map[string]Kind {

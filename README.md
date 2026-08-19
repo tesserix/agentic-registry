@@ -268,6 +268,7 @@ Secrets — **never** the database, never the image.
 
 More guides:
 
+- [`docs/agentgateway-admin.md`](docs/agentgateway-admin.md) — administer AgentGateway and connect products.
 - [`docs/connecting-tools.md`](docs/connecting-tools.md) — wiring a gateway/tool to the registry.
 - [`docs/cli.md`](docs/cli.md) — the full CLI reference.
 - [`docs/a2a-agent-cards.md`](docs/a2a-agent-cards.md) — Agent-to-Agent discovery.
