@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   gatewayEndpoint,
   installConfig,
   isMcpGatewayHost,
+  loadMcpGatewayProfile,
   MCP_CLIENTS,
+  profileFromUserInfo,
   serverDisplayName,
   tokenRequestCommand,
 } from "./mcpGateway";
@@ -81,5 +83,40 @@ describe("MCP gateway presentation", () => {
     expect(command).toContain("386889024519799084:aud");
     expect(command).toContain("TESSERIX_MCP_CLIENT_SECRET");
     expect(command).not.toContain("client_secret=");
+  });
+
+  it("maps the verified OAuth session to an administrator profile", () => {
+    expect(
+      profileFromUserInfo({
+        user: "zitadel-user-id",
+        email: "samyak.rout@gmail.com",
+        preferredUsername: "Samyak Rout",
+      }),
+    ).toEqual({
+      displayName: "Samyak Rout",
+      email: "samyak.rout@gmail.com",
+      initials: "SR",
+      role: "Administrator",
+    });
+  });
+
+  it("loads profile data only from oauth2-proxy userinfo", async () => {
+    const request = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          user: "zitadel-user-id",
+          email: "mahesh.sangawar@gmail.com",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(loadMcpGatewayProfile(request)).resolves.toMatchObject({
+      email: "mahesh.sangawar@gmail.com",
+      role: "Administrator",
+    });
+    expect(request).toHaveBeenCalledWith("/oauth2/userinfo", {
+      headers: { Accept: "application/json" },
+    });
   });
 });
