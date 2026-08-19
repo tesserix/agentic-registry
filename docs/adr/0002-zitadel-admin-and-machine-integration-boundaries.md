@@ -46,7 +46,9 @@ Every crossing authenticates and authorizes independently.
 ### Machine integrations
 
 - GitHub Actions publishes manifests with `POST /v0/apply` and a tenant-scoped
-  deploy key. GitHub stores the raw key; Registry stores only its SHA-256 digest.
+  deploy key in `X-Agentic-Registry-Deploy-Key`. GitHub stores the raw key;
+  Registry stores only its SHA-256 digest. `Authorization` remains reserved for
+  Zitadel/JWKS tokens at the mesh boundary.
 - Agent Gateway pulls catalog-derived configuration from
   `GET /v0/export/agentgateway`. kagent uses `GET /v0/export/kagent`; other
   consumers use the versioned catalog and Agent Card endpoints.

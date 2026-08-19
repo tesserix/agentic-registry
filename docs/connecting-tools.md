@@ -169,7 +169,7 @@ environment secret and put only its SHA-256 digest in Registry configuration:
   run: |
     curl --fail-with-body --silent --show-error \
       --request POST \
-      --header "Authorization: Bearer ${REGISTRY_DEPLOY_KEY}" \
+      --header "X-Agentic-Registry-Deploy-Key: ${REGISTRY_DEPLOY_KEY}" \
       --header "Content-Type: application/yaml" \
       --data-binary @agents.yaml \
       "${REGISTRY_URL}/v0/apply"
@@ -178,6 +178,11 @@ environment secret and put only its SHA-256 digest in Registry configuration:
 The workflow must be environment-protected and must not expose the secret to
 fork pull requests. Reapplying the same content is safe; explicit immutable
 version tags reject conflicting content.
+
+The dedicated header keeps this opaque machine credential separate from
+`Authorization`, which remains reserved for JWTs validated by the service mesh
+and Registry JWKS authenticator. Bearer deploy keys remain a compatibility path
+for callers that do not cross a JWT-validating mesh.
 
 ## 8. Agent Gateway and other consumers
 

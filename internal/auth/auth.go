@@ -45,6 +45,10 @@ const (
 	ScopeRead  = "registry:read"
 	ScopeWrite = "registry:write"
 	ScopeAdmin = "registry:admin"
+
+	// DeployKeyHeader carries opaque machine credentials without exposing them
+	// to mesh JWT authentication on the Authorization header.
+	DeployKeyHeader = "X-Agentic-Registry-Deploy-Key"
 )
 
 func (id Identity) hasScope(s string) bool {
@@ -355,7 +359,10 @@ func withDeployKeys(next Authenticator, cfg config.Config) (Authenticator, error
 }
 
 func (a deployKeyAuth) Identify(r *http.Request) Identity {
-	token := bearerToken(r)
+	token := strings.TrimSpace(r.Header.Get(DeployKeyHeader))
+	if token == "" {
+		token = bearerToken(r)
+	}
 	candidate := sha256.Sum256([]byte(token))
 	matchedTenant := ""
 	for _, key := range a.keys {

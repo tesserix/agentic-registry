@@ -277,6 +277,34 @@ func TestDeployKeyAuthenticatesTenantScopedWriter(t *testing.T) {
 	}
 }
 
+func TestDeployKeyAuthenticatesDedicatedHeader(t *testing.T) {
+	a, err := New(config.Config{
+		AuthMode:          "anonymous",
+		AnonymousRole:     "read",
+		DeployKeySHA256:   []string{deployKeyDigest("current-key")},
+		DeployKeyTenantID: "kora",
+	})
+	if err != nil {
+		t.Fatalf("deploy-key auth must build: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "/v0/apply", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("X-Agentic-Registry-Deploy-Key", "current-key")
+
+	id := a.Identify(req)
+	if !id.Authenticated || id.TenantID != "kora" || id.Subject != "deploy-key:kora" {
+		t.Fatalf("unexpected deploy-key identity: %#v", id)
+	}
+	if !CanWrite(id, obj(v1alpha1.VisibilityPrivate, "kora")) {
+		t.Fatal("deploy key must write within its tenant")
+	}
+	if CanWrite(id, obj(v1alpha1.VisibilityPrivate, "other")) {
+		t.Fatal("deploy key must not write outside its tenant")
+	}
+}
+
 func TestDeployKeySupportsRotationOverlap(t *testing.T) {
 	a, err := New(config.Config{
 		AuthMode:          "anonymous",
@@ -348,6 +376,30 @@ func TestInvalidDeployKeyDelegatesToConfiguredAuthenticator(t *testing.T) {
 	}
 	if CanWrite(id, obj(v1alpha1.VisibilityPrivate, v1alpha1.DefaultNamespace)) {
 		t.Fatal("delegated read-only identity must not gain write access")
+	}
+}
+
+func TestInvalidDedicatedDeployKeyDelegatesToConfiguredAuthenticator(t *testing.T) {
+	a, err := New(config.Config{
+		AuthMode:          "trusted-header",
+		TrustedProxy:      true,
+		DeployKeySHA256:   []string{deployKeyDigest("valid-key")},
+		DeployKeyTenantID: "kora",
+	})
+	if err != nil {
+		t.Fatalf("deploy-key auth must build: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "/v0/skills", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set(DeployKeyHeader, "invalid-key")
+	req.Header.Set("X-Forwarded-User", "zitadel-user")
+	req.Header.Set("X-Forwarded-Tenant", "kora")
+
+	id := a.Identify(req)
+	if id.Subject != "zitadel-user" || id.TenantID != "kora" {
+		t.Fatalf("invalid dedicated deploy key must delegate, got %#v", id)
 	}
 }
 
