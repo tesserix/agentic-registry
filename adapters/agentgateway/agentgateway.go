@@ -31,8 +31,7 @@ const (
 	backendGroup        = "agentgateway.dev"
 )
 
-// Options controls where the rendered routes attach and how unrouted
-// (non-remote) MCP servers resolve to an in-cluster Service.
+// Options controls where the rendered routes attach.
 type Options struct {
 	// Namespace the Backend/HTTPRoute objects are created in.
 	Namespace string
@@ -41,12 +40,6 @@ type Options struct {
 	GatewayNamespace string
 	// PathPrefix is prepended to each server's path. Defaults to "/mcp".
 	PathPrefix string
-	// SandboxNamespace is where image/package MCP servers run; their Backend
-	// targets <sanitized-name>.<SandboxNamespace>.svc.cluster.local. Defaults
-	// to the Namespace when empty.
-	SandboxNamespace string
-	// SandboxPort is the port image/package MCP servers listen on. Default 8080.
-	SandboxPort int
 }
 
 func (o Options) withDefaults() Options {
@@ -61,12 +54,6 @@ func (o Options) withDefaults() Options {
 	}
 	if o.PathPrefix == "" {
 		o.PathPrefix = "/mcp"
-	}
-	if o.SandboxNamespace == "" {
-		o.SandboxNamespace = o.Namespace
-	}
-	if o.SandboxPort == 0 {
-		o.SandboxPort = 8080
 	}
 	return o
 }
@@ -124,7 +111,7 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 
 	for _, srv := range servers {
 		name := serverName(srv)
-		if name == "" {
+		if name == "" || isDirectory(srv) {
 			continue
 		}
 		san := adapters.SanitizeName(name)
@@ -133,7 +120,10 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 		}
 		seen[san] = true
 
-		tgt := targetFor(srv, san, opts)
+		tgt, ok := targetFor(srv)
+		if !ok {
+			continue
+		}
 		path := opts.PathPrefix + "/" + san
 		labels := map[string]interface{}{
 			"app.kubernetes.io/managed-by": "agentic-registry",
@@ -224,26 +214,38 @@ func serverName(srv v1alpha1.Object) string {
 	return srv.Metadata.Name
 }
 
-// targetFor resolves where a server's Backend points. Remote servers
-// (spec.remotes[].url) parse the URL into host/port/path; everything else
-// (image/package servers) targets an in-cluster sandbox Service by convention.
-func targetFor(srv v1alpha1.Object, san string, opts Options) target {
-	if u, transport := firstRemote(srv); u != "" {
-		return parseRemote(u, transport)
+// targetFor resolves where a server's Backend points, from spec.remotes[].url.
+// A server that declares no remote has no resolvable upstream and reports false;
+// guessing an in-cluster Service name here produced routes to Services that
+// never existed.
+func targetFor(srv v1alpha1.Object) (target, bool) {
+	u, transport := firstRemote(srv)
+	if u == "" {
+		return target{}, false
 	}
-	return target{
-		host:     fmt.Sprintf("%s.%s.svc.cluster.local", san, opts.SandboxNamespace),
-		port:     opts.SandboxPort,
-		path:     "/mcp",
-		protocol: "StreamableHTTP",
-	}
+	return parseRemote(u, transport), true
 }
 
-// firstRemote returns the first remote endpoint URL and its transport hint.
+// isDirectory reports whether a server is a directory entry — a third-party MCP
+// the catalog lists for humans to wire into their own client, authenticated per
+// user. It has no platform-held credential, so the gateway must never route it.
+// Same signal the DevAI MCP Hub skips on.
+func isDirectory(srv v1alpha1.Object) bool {
+	if c, ok := srv.Spec["catalog"].(bool); ok && c {
+		return true
+	}
+	return srv.Metadata.Labels["mcp.devai.io/catalog"] == "true"
+}
+
+// firstRemote returns the first remote endpoint URL and its transport hint,
+// accepting both dialects: spec.remotes[] (MCP-registry) and spec.endpoint
+// (devai/solo, what the seeds carry and the MCP Hub dials).
 func firstRemote(srv v1alpha1.Object) (string, string) {
 	remotes, ok := srv.Spec["remotes"].([]interface{})
 	if !ok {
-		return "", ""
+		u, _ := srv.Spec["endpoint"].(string)
+		transport, _ := srv.Spec["transport"].(string)
+		return u, transport
 	}
 	for _, r := range remotes {
 		m, ok := r.(map[string]interface{})
