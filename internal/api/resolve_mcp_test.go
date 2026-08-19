@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
@@ -69,5 +70,32 @@ func TestMCPServerResolvedRegistryTier(t *testing.T) {
 	}
 	if len(got.Conditions) == 0 || got.Conditions[0].Type != "Resolved" || got.Conditions[0].Status != "False" {
 		t.Errorf("conditions=%+v want Resolved=False (NOTIFY)", got.Conditions)
+	}
+}
+
+func TestMCPServerResolvedAcceptsEscapedRegistryName(t *testing.T) {
+	srv, st := testServer(t)
+	name := "io.github.acme/files"
+	if _, _, err := st.Apply(context.Background(), v1alpha1.Object{
+		Kind:     v1alpha1.KindMCPServer,
+		Metadata: v1alpha1.ObjectMeta{Name: name},
+		Spec:     map[string]any{"name": name},
+	}); err != nil {
+		t.Fatalf("apply mcpserver: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/v0/mcpservers/"+url.PathEscape(name)+"/resolved", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resolved escaped name: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var got ResolvedMCPServer
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.MCPServer.Metadata.Name != name {
+		t.Fatalf("name=%q want %q", got.MCPServer.Metadata.Name, name)
 	}
 }
