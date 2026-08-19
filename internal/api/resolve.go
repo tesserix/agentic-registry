@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 
@@ -125,7 +126,11 @@ func (s *Server) agentResolved(w http.ResponseWriter, r *http.Request, tag strin
 		writeErr(w, http.StatusBadRequest, "resolution is only defined for agents and mcpservers")
 		return
 	}
-	name := chi.URLParam(r, "name")
+	name, err := url.PathUnescape(chi.URLParam(r, "name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid artifact name")
+		return
+	}
 	ns := s.resolveNamespace(r, kind, name) // resolve across readable namespaces
 
 	obj, err := s.store.Get(r.Context(), kind, ns, name, tag)

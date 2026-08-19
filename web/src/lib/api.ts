@@ -100,6 +100,27 @@ export interface Health {
   platform: string;
 }
 
+export interface RegistryCondition {
+  type: string;
+  status: "True" | "False";
+  reason: string;
+  message: string;
+}
+
+export interface UnresolvedRef {
+  kind: string;
+  ref: string;
+  reason: string;
+}
+
+export interface ResolvedMCPServer {
+  mcpServer: Artifact;
+  tools: Artifact[];
+  toolCount: number;
+  unresolved?: UnresolvedRef[];
+  conditions: RegistryCondition[];
+}
+
 export const api = {
   health: () => get<Health>("/healthz"),
 
@@ -157,6 +178,11 @@ export const api = {
 
   get: (plural: string, name: string, namespace = "default") =>
     get<Artifact>(`/v0/${plural}/${encodeURIComponent(name)}?namespace=${namespace}`),
+
+  resolvedMcp: (name: string, namespace = "default") =>
+    get<ResolvedMCPServer>(
+      `/v0/mcpservers/${encodeURIComponent(name)}/resolved?namespace=${encodeURIComponent(namespace)}`,
+    ),
 
   getVersion: (plural: string, name: string, tag: string, namespace = "default") =>
     get<Artifact>(`/v0/${plural}/${encodeURIComponent(name)}/${encodeURIComponent(tag)}?namespace=${namespace}`),
