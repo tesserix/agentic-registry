@@ -53,20 +53,13 @@ func TestValidate_ModelConfigDefaulted(t *testing.T) {
 	}
 }
 
-// Tools render as v1alpha1 ToolServer refs → WARNING (not an error).
-func TestValidate_ToolsWarn(t *testing.T) {
+// Tools render as v1alpha2 RemoteMCPServer refs with an explicit allowlist.
+func TestValidate_RemoteMCPToolsPass(t *testing.T) {
 	issues := Validate(sampleAgent(), []v1alpha1.Object{mcp("github", "https://gh/mcp")}, Options{ModelConfigRef: "mc"})
-	warned := false
 	for _, i := range issues {
 		if i.Severity == "error" {
-			t.Fatalf("tools should warn, not error: %+v", issues)
+			t.Fatalf("remote MCP tools should validate: %+v", issues)
 		}
-		if i.Field == "spec.declarative.tools" && i.Severity == "warning" {
-			warned = true
-		}
-	}
-	if !warned {
-		t.Fatalf("expected a tools warning, got %+v", issues)
 	}
 }
 
@@ -80,6 +73,9 @@ func TestBuild_SandboxAgentWhenWorkerPoolSet(t *testing.T) {
 		t.Fatalf("expected kind SandboxAgent, got %v", out.Agent["kind"])
 	}
 	spec := out.Agent["spec"].(map[string]interface{})
+	if spec["platform"] != "substrate" {
+		t.Fatalf("expected platform=substrate, got %v", spec["platform"])
+	}
 	sub, ok := spec["substrate"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected substrate object, got %v", spec["substrate"])

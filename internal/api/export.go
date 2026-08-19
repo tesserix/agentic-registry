@@ -127,7 +127,7 @@ func countYAMLResources(body []byte) int {
 	return count
 }
 
-// v0ExportKagent renders one Agent as a kagent.dev Agent CR plus a ToolServer
+// v0ExportKagent renders one Agent as a kagent.dev Agent CR plus a RemoteMCPServer
 // per resolved MCP dependency. Mounted under the collection route; only valid
 // for the agents collection. Query params:
 //
@@ -196,7 +196,7 @@ func (s *Server) v0ExportKagent(w http.ResponseWriter, r *http.Request) {
 }
 
 // v0ExportKagentAll renders every Agent matching an optional labelSelector
-// (e.g. devai.io/runtime=kagent) into kagent.dev Agent + ToolServer YAML, as
+// (e.g. devai.io/runtime=kagent) into kagent.dev Agent + RemoteMCPServer YAML, as
 // one multi-doc stream. This is what the kagent agent-sync Job applies so
 // long-lived agents become controller-managed. Query params mirror the
 // per-agent endpoint, plus:

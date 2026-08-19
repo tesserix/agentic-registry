@@ -21,6 +21,7 @@ func seedMCPAndAgent(t *testing.T, st interface {
 		Spec: map[string]any{
 			"name":    "github",
 			"remotes": []any{map[string]any{"type": "streamableHttp", "url": "https://gh.example/mcp"}},
+			"tools":   []any{"get_pr", "create_pr"},
 		},
 	}); err != nil {
 		t.Fatalf("seed mcp: %v", err)
@@ -68,7 +69,7 @@ func TestExportKagent(t *testing.T) {
 	srv, st := testServer(t)
 	seedMCPAndAgent(t, st)
 
-	req := httptest.NewRequest(http.MethodGet, "/v0/agents/reviewer/export/kagent?namespace=devai&modelConfig=opus", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v0/agents/reviewer/export/kagent?namespace=devai&modelConfig=opus&gatewayUrl=http://gateway:8080", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -77,12 +78,13 @@ func TestExportKagent(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"apiVersion: kagent.dev/v1alpha1",
+		"apiVersion: kagent.dev/v1alpha2",
 		"kind: Agent",
-		"kind: ToolServer",
+		"kind: RemoteMCPServer",
 		"name: reviewer",
 		"modelConfig: opus",
-		"toolServer: github",
+		"toolNames:",
+		"url: http://gateway:8080/mcp/github",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("kagent export missing %q\n%s", want, body)
@@ -102,7 +104,7 @@ func TestExportKagentAll(t *testing.T) {
 		t.Fatalf("status: got %d, body %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"kind: Agent", "kind: ToolServer", "name: reviewer"} {
+	for _, want := range []string{"kind: Agent", "kind: RemoteMCPServer", "name: reviewer"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("kagent-all export missing %q\n%s", want, body)
 		}
