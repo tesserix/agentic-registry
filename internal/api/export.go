@@ -34,7 +34,6 @@ import (
 //	namespace        registry namespace to read MCP servers from (default: DefaultNamespace)
 //	targetNamespace  namespace the rendered objects are created in (default: agentgateway-system)
 //	gateway          HTTPRoute parentRef gateway name (default: agentgateway)
-//	sandboxNamespace namespace image/package MCP servers run in (default: targetNamespace)
 func (s *Server) v0ExportAgentgateway(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
@@ -58,7 +57,6 @@ func (s *Server) v0ExportAgentgateway(w http.ResponseWriter, r *http.Request) {
 		Namespace:        r.URL.Query().Get("targetNamespace"),
 		GatewayName:      r.URL.Query().Get("gateway"),
 		GatewayNamespace: r.URL.Query().Get("gatewayNamespace"),
-		SandboxNamespace: r.URL.Query().Get("sandboxNamespace"),
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

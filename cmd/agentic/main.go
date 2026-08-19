@@ -481,7 +481,6 @@ func cmdExport(args []string) error {
 			GatewayName:      fs["gateway"],
 			GatewayNamespace: fs["gateway-namespace"],
 			PathPrefix:       fs["path-prefix"],
-			SandboxNamespace: fs["sandbox-namespace"],
 		})
 	case "kagent":
 		out, err = kagent.Build(ra.Agent, mcpServers, kagent.Options{
