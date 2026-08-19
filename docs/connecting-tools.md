@@ -29,7 +29,7 @@ adapter against it.
  └─────────────┘  5. JSON                      └──────────────┘
 ```
 
-1. Your tool is a registered **OIDC client** in your IdP (Keycloak, Auth0,
+1. Your tool is a registered **OIDC client** in your IdP (Zitadel, Auth0,
    Okta, Entra, …). Its `client_secret` lives in a **secret manager**, never in
    code and never in the registry.
 2. It performs the **client-credentials grant** to get a **short-lived JWT**
@@ -53,6 +53,20 @@ AUTH_ISSUER=https://idp.example.com/realms/main
 AUTH_AUDIENCE=agentic-registry        # optional but recommended
 AUTH_GROUPS_CLAIM=groups              # claim carrying tenant roles
 ```
+
+For Tesserix Zitadel human administration, use the project-role object claim
+and require both the project role and the explicit email allowlist:
+
+```bash
+AUTH_GROUPS_CLAIM=urn:zitadel:iam:org:project:roles
+AUTH_ADMIN_ROLE=agentregistry.admin
+AUTH_ADMIN_EMAILS=samyak.rout@gmail.com,mahesh.sangawar@gmail.com
+```
+
+Zitadel encodes project roles as object keys; Agentic Registry reads those keys
+without trusting their nested display values. A human with the role but an
+email outside the allowlist receives no write grant. Machine identities remain
+subject to scopes and tenant roles and should not carry human email claims.
 
 In-cluster, also put the registry behind the mesh so only known workloads reach
 it (defense in depth): Istio `RequestAuthentication` + `AuthorizationPolicy`, or
@@ -140,3 +154,44 @@ The minimum surface an adapter implements (see
 
 The registry's own database holds **no** consumer secrets — it only verifies
 tokens it never minted.
+
+## 7. GitHub Actions publisher
+
+GitHub publishes manifests into one tenant; Registry does not call GitHub and
+does not store a GitHub token. Put the raw tenant deploy key in a GitHub Actions
+environment secret and put only its SHA-256 digest in Registry configuration:
+
+```yaml
+- name: Publish agent manifests
+  env:
+    REGISTRY_URL: https://aregistry.tesserix.app
+    REGISTRY_DEPLOY_KEY: ${{ secrets.AGENTIC_REGISTRY_DEPLOY_KEY }}
+  run: |
+    curl --fail-with-body --silent --show-error \
+      --request POST \
+      --header "Authorization: Bearer ${REGISTRY_DEPLOY_KEY}" \
+      --header "Content-Type: application/yaml" \
+      --data-binary @agents.yaml \
+      "${REGISTRY_URL}/v0/apply"
+```
+
+The workflow must be environment-protected and must not expose the secret to
+fork pull requests. Reapplying the same content is safe; explicit immutable
+version tags reject conflicting content.
+
+## 8. Agent Gateway and other consumers
+
+Agent Gateway pulls rendered control-plane configuration instead of receiving
+an outbound push from Registry:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  --header "Authorization: Bearer ${REGISTRY_TOKEN}" \
+  "${REGISTRY_URL}/v0/export/agentgateway?namespace=tesserix&targetNamespace=agentgateway-system"
+```
+
+Use a dedicated machine identity or a read-scoped tenant credential. Apply the
+result through the owning GitOps/controller process. kagent uses
+`/v0/export/kagent`; generic consumers use `/v0/{collection}` and A2A Agent
+Cards. Provider and model credentials remain in the Agent Gateway secret
+boundary and never enter Registry.

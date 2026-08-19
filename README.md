@@ -297,6 +297,12 @@ overlap during rotation. Keep the raw key only in the publisher's secret store;
 the registry compares its digest in constant time and grants only
 `registry:read registry:write` within the configured tenant.
 
+Human administration can additionally require two independent Zitadel claims:
+an exact `AUTH_ADMIN_EMAILS` match and the project role named by
+`AUTH_ADMIN_ROLE`. This mapping understands Zitadel's project-role object claim
+and does not affect tenant-scoped deploy keys or scoped machine identities. See
+[`docs/adr/0002-zitadel-admin-and-machine-integration-boundaries.md`](docs/adr/0002-zitadel-admin-and-machine-integration-boundaries.md).
+
 ---
 
 ## Contributing & governance

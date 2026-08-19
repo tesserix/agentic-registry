@@ -104,6 +104,10 @@ func New(cfg config.Config) (Authenticator, error) {
 	if err != nil {
 		return nil, err
 	}
+	base, err = withHumanAdminPolicy(base, cfg)
+	if err != nil {
+		return nil, err
+	}
 	return withDeployKeys(base, cfg)
 }
 
@@ -232,6 +236,86 @@ func splitTrim(s string) []string {
 	return out
 }
 
+type humanAdminAuth struct {
+	next         Authenticator
+	adminEmails  map[string]struct{}
+	externalRole string
+}
+
+func withHumanAdminPolicy(next Authenticator, cfg config.Config) (Authenticator, error) {
+	if len(cfg.AdminEmails) == 0 && strings.TrimSpace(cfg.AdminRole) == "" {
+		return next, nil
+	}
+	if cfg.AuthMode != "jwks" && cfg.AuthMode != "trusted-header" {
+		return nil, fmt.Errorf("AUTH_ADMIN_EMAILS requires AUTH_MODE=jwks or AUTH_MODE=trusted-header")
+	}
+	if len(cfg.AdminEmails) == 0 || strings.TrimSpace(cfg.AdminRole) == "" {
+		return nil, fmt.Errorf("AUTH_ADMIN_EMAILS and AUTH_ADMIN_ROLE must be configured together")
+	}
+	emails := make(map[string]struct{}, len(cfg.AdminEmails))
+	for _, email := range cfg.AdminEmails {
+		if email = strings.ToLower(strings.TrimSpace(email)); email != "" {
+			emails[email] = struct{}{}
+		}
+	}
+	if len(emails) == 0 {
+		return nil, fmt.Errorf("AUTH_ADMIN_EMAILS must contain at least one email")
+	}
+	return humanAdminAuth{
+		next:         next,
+		adminEmails:  emails,
+		externalRole: strings.TrimSpace(cfg.AdminRole),
+	}, nil
+}
+
+func (a humanAdminAuth) Identify(r *http.Request) Identity {
+	id := a.next.Identify(r)
+	if !id.Authenticated || strings.TrimSpace(id.Email) == "" {
+		return id
+	}
+
+	_, emailAllowed := a.adminEmails[strings.ToLower(strings.TrimSpace(id.Email))]
+	roleAllowed := contains(id.Groups, a.externalRole)
+	id.Groups = humanReadGroups(id.Groups)
+	id.Scopes = humanReadScopes(id.Scopes)
+	if emailAllowed && roleAllowed {
+		id.Groups = append(id.Groups, "registry:admin")
+		id.Scopes = append(id.Scopes, ScopeAdmin)
+	}
+	return id
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func humanReadGroups(groups []string) []string {
+	out := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if group == "registry:admin" || strings.HasSuffix(group, ":admin") || strings.HasSuffix(group, ":writer") {
+			continue
+		}
+		out = append(out, group)
+	}
+	return out
+}
+
+func humanReadScopes(scopes []string) []string {
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope == ScopeWrite || scope == ScopeAdmin {
+			continue
+		}
+		out = append(out, scope)
+	}
+	return out
+}
+
 type deployKeyAuth struct {
 	next Authenticator
 	keys []deployKey
@@ -326,6 +410,15 @@ func CanWrite(id Identity, o v1alpha1.Object) bool {
 		return false
 	}
 	return RoleFor(id, o) >= RoleWrite
+}
+
+// CanAdmin reports whether the caller has a global registry administrator
+// grant. Tenant writers remain intentionally false.
+func CanAdmin(id Identity) bool {
+	if !id.Authenticated || !id.scopeAllows(ScopeAdmin) {
+		return false
+	}
+	return contains(id.Groups, "registry:admin")
 }
 
 // RoleFor derives the caller's effective (cumulative) role on an artifact from

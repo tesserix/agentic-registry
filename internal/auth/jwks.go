@@ -3,6 +3,7 @@ package auth
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/MicahParks/keyfunc/v3"
@@ -101,6 +102,13 @@ func bearerToken(r *http.Request) string {
 
 func extractGroups(v interface{}) []string {
 	switch vv := v.(type) {
+	case map[string]interface{}:
+		out := make([]string, 0, len(vv))
+		for role := range vv {
+			out = append(out, role)
+		}
+		sort.Strings(out)
+		return out
 	case []interface{}:
 		out := make([]string, 0, len(vv))
 		for _, g := range vv {
