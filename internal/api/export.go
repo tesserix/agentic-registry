@@ -2,8 +2,12 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -14,6 +18,7 @@ import (
 	"github.com/tesserix/agentic-registry/internal/selector"
 	"github.com/tesserix/agentic-registry/internal/store"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
+	"gopkg.in/yaml.v3"
 )
 
 // Export endpoints render registry artifacts into runtime control-plane config
@@ -59,7 +64,69 @@ func (s *Server) v0ExportAgentgateway(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	desired, err := s.store.List(r.Context(), store.ListOptions{
+		Kind:       v1alpha1.KindGatewayResource,
+		Namespace:  agentgatewayRegistryNamespace,
+		LatestOnly: true,
+		Limit:      1000,
+		CanRead:    readPredicate(r),
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "list AgentGateway desired state")
+		return
+	}
+	sort.Slice(desired.Items, func(i, j int) bool {
+		leftKind, _ := desired.Items[i].Spec["kind"].(string)
+		rightKind, _ := desired.Items[j].Spec["kind"].(string)
+		leftName := desired.Items[i].Metadata.Name
+		rightName := desired.Items[j].Metadata.Name
+		return gatewayResourceOrder(leftKind, leftName) < gatewayResourceOrder(rightKind, rightName)
+	})
+	var combined bytes.Buffer
+	combined.Write(out)
+	for _, artifact := range desired.Items {
+		resource, err := gatewayResourceForExport(artifact.Spec)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "render AgentGateway desired state")
+			return
+		}
+		body, err := yaml.Marshal(resource)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "render AgentGateway desired state")
+			return
+		}
+		if combined.Len() > 0 && !bytes.HasSuffix(combined.Bytes(), []byte("---\n")) {
+			if !bytes.HasSuffix(combined.Bytes(), []byte("\n")) {
+				combined.WriteByte('\n')
+			}
+			combined.WriteString("---\n")
+		}
+		combined.Write(body)
+	}
+	out = combined.Bytes()
+	digest := sha256.Sum256(out)
+	w.Header().Set("X-Agentgateway-Resource-Count", strconv.Itoa(countYAMLResources(out)))
+	w.Header().Set("X-Agentgateway-Resource-Digest", fmt.Sprintf("sha256:%x", digest))
 	writeYAML(w, out)
+}
+
+func gatewayResourceOrder(kind, name string) string {
+	order := map[string]string{
+		"AgentgatewayBackend": "0",
+		"HTTPRoute":           "1",
+		"AgentgatewayPolicy":  "2",
+	}
+	return order[kind] + "/" + name
+}
+
+func countYAMLResources(body []byte) int {
+	count := 0
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		if bytes.HasPrefix(line, []byte("kind: ")) {
+			count++
+		}
+	}
+	return count
 }
 
 // v0ExportKagent renders one Agent as a kagent.dev Agent CR plus a ToolServer

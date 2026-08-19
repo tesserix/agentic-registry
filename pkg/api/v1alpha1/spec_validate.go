@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -60,6 +61,8 @@ func ValidateSpec(kind Kind, spec map[string]interface{}) error {
 		errs = validateGraphSpec(spec)
 	case KindMCPServer:
 		errs = validateMCPSpec(spec)
+	case KindGatewayResource:
+		errs = validateGatewayResourceSpec(spec)
 	default:
 		return nil // Skill, Prompt, Project: free-form
 	}
@@ -67,6 +70,77 @@ func ValidateSpec(kind Kind, spec map[string]interface{}) error {
 		return nil
 	}
 	return &SpecError{Errors: errs}
+}
+
+var kubernetesName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+var gatewayResourceGVKs = map[string]string{
+	"agentgateway.dev/v1alpha1/AgentgatewayBackend": "backend",
+	"agentgateway.dev/v1alpha1/AgentgatewayPolicy":  "policy",
+	"gateway.networking.k8s.io/v1/HTTPRoute":        "route",
+}
+
+var secretFieldNames = map[string]bool{
+	"apikey": true, "clientsecret": true, "credentials": true,
+	"password": true, "secret": true, "token": true,
+}
+
+func validateGatewayResourceSpec(spec map[string]interface{}) []FieldError {
+	var errs []FieldError
+	allowedTop := map[string]bool{"apiVersion": true, "kind": true, "metadata": true, "spec": true}
+	for key := range spec {
+		if !allowedTop[key] {
+			errs = append(errs, FieldError{"spec." + key, "field is not allowed on a GatewayResource"})
+		}
+	}
+	apiVersion, _ := spec["apiVersion"].(string)
+	kind, _ := spec["kind"].(string)
+	if gatewayResourceGVKs[apiVersion+"/"+kind] == "" {
+		errs = append(errs, FieldError{"spec.kind", "resource GVK is not allowlisted"})
+	}
+	metadata, ok := spec["metadata"].(map[string]interface{})
+	if !ok {
+		return append(errs, FieldError{"spec.metadata", "must be an object"})
+	}
+	for key := range metadata {
+		if key != "name" && key != "namespace" {
+			errs = append(errs, FieldError{"spec.metadata." + key, "field is server-managed"})
+		}
+	}
+	name, _ := metadata["name"].(string)
+	if len(name) == 0 || len(name) > 253 || !kubernetesName.MatchString(name) {
+		errs = append(errs, FieldError{"spec.metadata.name", "must be a valid DNS subdomain name"})
+	}
+	if namespace, _ := metadata["namespace"].(string); namespace != "" && namespace != "agentgateway-system" {
+		errs = append(errs, FieldError{"spec.metadata.namespace", "must be agentgateway-system"})
+	}
+	resourceSpec, ok := spec["spec"].(map[string]interface{})
+	if !ok || len(resourceSpec) == 0 {
+		errs = append(errs, FieldError{"spec.spec", "must be a non-empty object"})
+	} else {
+		errs = append(errs, findSecretFields(resourceSpec, "spec.spec")...)
+	}
+	return errs
+}
+
+func findSecretFields(value interface{}, path string) []FieldError {
+	var errs []FieldError
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		for key, child := range typed {
+			normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(key))
+			if secretFieldNames[normalized] {
+				errs = append(errs, FieldError{path + "." + key, "secret material is not allowed; use workload identity or a Kubernetes secret reference owned by GitOps"})
+				continue
+			}
+			errs = append(errs, findSecretFields(child, path+"."+key)...)
+		}
+	case []interface{}:
+		for i, child := range typed {
+			errs = append(errs, findSecretFields(child, fmt.Sprintf("%s[%d]", path, i))...)
+		}
+	}
+	return errs
 }
 
 // decode marshals the free-form spec and unmarshals into v WITHOUT

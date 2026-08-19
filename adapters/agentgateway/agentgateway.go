@@ -96,6 +96,9 @@ func Build(servers []v1alpha1.Object, opts Options) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(routes) == 0 {
+		return []byte{}, nil
+	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)

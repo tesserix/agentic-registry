@@ -16,6 +16,21 @@ func deployKeyDigest(key string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func TestBearerTokenAcceptsOAuthProxyForwardedAccessToken(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "/v0/session", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("X-Forwarded-Access-Token", "verified-upstream-token")
+	if got := bearerToken(req); got != "verified-upstream-token" {
+		t.Fatalf("bearerToken()=%q", got)
+	}
+	req.Header.Set("Authorization", "Bearer direct-token")
+	if got := bearerToken(req); got != "direct-token" {
+		t.Fatalf("Authorization header must take precedence, got %q", got)
+	}
+}
+
 func obj(vis v1alpha1.Visibility, tenant string) v1alpha1.Object {
 	return v1alpha1.Object{
 		Kind:     v1alpha1.KindSkill,
