@@ -1,6 +1,7 @@
 package kagent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -26,6 +27,7 @@ func mcp(name, url string) v1alpha1.Object {
 		Spec: map[string]interface{}{
 			"name":    name,
 			"remotes": []interface{}{map[string]interface{}{"url": url}},
+			"tools":   []interface{}{"create_pr", "get_pr"},
 		},
 	}
 }
@@ -52,19 +54,26 @@ func TestBuildOutput_AgentAndMCP(t *testing.T) {
 	if dec["modelConfig"] != "claude-opus-config" {
 		t.Errorf("declarative.modelConfig: got %v", dec["modelConfig"])
 	}
-	if len(out.ToolServers) != 1 {
-		t.Fatalf("want 1 ToolServer, got %d", len(out.ToolServers))
+	if len(out.RemoteMCPServers) != 1 {
+		t.Fatalf("want 1 RemoteMCPServer, got %d", len(out.RemoteMCPServers))
 	}
-	cfg := out.ToolServers[0]["spec"].(map[string]interface{})["config"].(map[string]interface{})
-	shttp := cfg["streamableHttp"].(map[string]interface{})
+	remote := out.RemoteMCPServers[0]
+	if remote["apiVersion"] != "kagent.dev/v1alpha2" || remote["kind"] != "RemoteMCPServer" {
+		t.Fatalf("unexpected remote MCP GVK: %v %v", remote["apiVersion"], remote["kind"])
+	}
+	remoteSpec := remote["spec"].(map[string]interface{})
 	want := "http://agentgateway.agentgateway-system.svc.cluster.local:8080/mcp/github"
-	if shttp["url"] != want {
-		t.Errorf("toolserver url through gateway: got %v want %v", shttp["url"], want)
+	if remoteSpec["url"] != want || remoteSpec["protocol"] != "STREAMABLE_HTTP" {
+		t.Errorf("remote MCP route: got %v want %v over STREAMABLE_HTTP", remoteSpec, want)
 	}
-	// the Agent's tool ref (under declarative) points at the ToolServer by name.
+	// The Agent's least-privilege tool ref points at the v1alpha2 remote server.
 	tool := dec["tools"].([]interface{})[0].(map[string]interface{})
-	if tool["mcpServer"].(map[string]interface{})["toolServer"] != "github" {
-		t.Errorf("tool ref: got %v", tool["mcpServer"])
+	mcpRef := tool["mcpServer"].(map[string]interface{})
+	if mcpRef["apiGroup"] != "kagent.dev" || mcpRef["kind"] != "RemoteMCPServer" || mcpRef["name"] != "github" {
+		t.Errorf("tool ref: got %v", mcpRef)
+	}
+	if got := mcpRef["toolNames"].([]interface{}); len(got) != 2 || got[0] != "create_pr" || got[1] != "get_pr" {
+		t.Errorf("tool allowlist: got %v", got)
 	}
 	// model provider/name surface as annotations for ModelConfig mapping.
 	ann := out.Agent["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})
@@ -81,12 +90,12 @@ func TestBuild_YAMLContainsBothKinds(t *testing.T) {
 	got := string(out)
 	for _, want := range []string{
 		"apiVersion: kagent.dev/v1alpha2", // the Agent (declarative)
-		"apiVersion: kagent.dev/v1alpha1", // the ToolServer
 		"kind: Agent",
-		"kind: ToolServer",
+		"kind: RemoteMCPServer",
 		"name: code-reviewer",
 		"name: github",
-		"type: StreamableHttp",
+		"protocol: STREAMABLE_HTTP",
+		"toolNames:",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q\n%s", want, got)
@@ -99,10 +108,62 @@ func TestBuild_NoGatewayFallsBackToRemoteURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := out.ToolServers[0]["spec"].(map[string]interface{})["config"].(map[string]interface{})
-	shttp := cfg["streamableHttp"].(map[string]interface{})
-	if shttp["url"] != "https://gh/mcp" {
-		t.Errorf("without gateway, should use remote URL: got %v", shttp["url"])
+	spec := out.RemoteMCPServers[0]["spec"].(map[string]interface{})
+	if spec["url"] != "https://gh/mcp" {
+		t.Errorf("without gateway, should use remote URL: got %v", spec["url"])
+	}
+}
+
+func TestBuild_NoGatewayPrefersEndpointAndPreservesSSE(t *testing.T) {
+	server := mcp("github", "https://legacy.example/mcp")
+	server.Spec["endpoint"] = "https://mcp.example/sse"
+	server.Spec["transport"] = "sse"
+
+	out, err := BuildOutput(sampleAgent(), []v1alpha1.Object{server}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := out.RemoteMCPServers[0]["spec"].(map[string]interface{})
+	if spec["url"] != "https://mcp.example/sse" || spec["protocol"] != "SSE" {
+		t.Fatalf("direct remote MCP transport: got %v", spec)
+	}
+}
+
+func TestBuildOutput_ExplicitAgentToolsNarrowServerAllowlist(t *testing.T) {
+	agent := sampleAgent()
+	agent.Spec["tools"] = []interface{}{"get_pr"}
+	out, err := BuildOutput(agent, []v1alpha1.Object{mcp("github", "https://gh/mcp")}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := out.Agent["spec"].(map[string]interface{})["declarative"].(map[string]interface{})
+	ref := dec["tools"].([]interface{})[0].(map[string]interface{})["mcpServer"].(map[string]interface{})
+	got := ref["toolNames"].([]interface{})
+	if len(got) != 1 || got[0] != "get_pr" {
+		t.Fatalf("agent tool selection must narrow the server allowlist, got %v", got)
+	}
+}
+
+func TestBuildOutput_MCPServerWithoutDeclaredToolsFailsClosed(t *testing.T) {
+	server := mcp("github", "https://gh/mcp")
+	delete(server.Spec, "tools")
+	_, err := BuildOutput(sampleAgent(), []v1alpha1.Object{server}, Options{})
+	if err == nil || !strings.Contains(err.Error(), "declared tools") {
+		t.Fatalf("expected missing tool allowlist error, got %v", err)
+	}
+}
+
+func TestBuildOutput_MCPServerOverFiftyToolsFailsClosed(t *testing.T) {
+	server := mcp("github", "https://gh/mcp")
+	tools := make([]interface{}, 51)
+	for i := range tools {
+		tools[i] = fmt.Sprintf("tool-%02d", i)
+	}
+	server.Spec["tools"] = tools
+
+	_, err := BuildOutput(sampleAgent(), []v1alpha1.Object{server}, Options{})
+	if err == nil || !strings.Contains(err.Error(), "50-tool limit") {
+		t.Fatalf("expected 50-tool limit error, got %v", err)
 	}
 }
 

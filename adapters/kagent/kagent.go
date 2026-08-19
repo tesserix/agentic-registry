@@ -1,5 +1,5 @@
 // Package kagent renders a resolved registry Agent into a kagent.dev Agent CR
-// plus one ToolServer per MCP dependency, so a long-lived agent can be
+// plus one RemoteMCPServer per MCP dependency, so a long-lived agent can be
 // reconciled into a controller-managed Deployment by the kagent operator.
 //
 // Pure function over pkg/api/v1alpha1 types. The MCP servers passed in are the
@@ -12,8 +12,8 @@
 // under spec.declarative and selects the kind via spec.type. v1alpha1 is still
 // served, but applying a v1alpha1 Agent converts to v1alpha2 for storage and
 // drops the flat fields, leaving spec.declarative nil → the controller panics.
-// So the Agent is emitted as v1alpha2. ToolServer stays v1alpha1 (the tool path
-// still needs porting to v1alpha2 RemoteMCPServer + toolNames — TODO).
+// So both the Agent and its RemoteMCPServer dependencies are emitted as
+// v1alpha2 resources.
 package kagent
 
 import (
@@ -28,8 +28,6 @@ import (
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
 
-const kagentAPIVersion = "kagent.dev/v1alpha1"
-
 // The Agent CRD's storage version. The declarative spec shape only exists here;
 // emitting v1alpha1 would convert-and-drop the model/prompt on storage.
 const kagentAgentAPIVersion = "kagent.dev/v1alpha2"
@@ -37,15 +35,15 @@ const kagentAgentAPIVersion = "kagent.dev/v1alpha2"
 // Options controls namespacing, the ModelConfig the Agent references, and how
 // MCP tools are reached.
 type Options struct {
-	// Namespace the Agent + ToolServer CRs are created in.
+	// Namespace the Agent + RemoteMCPServer CRs are created in.
 	Namespace string
 	// ModelConfigRef is the name of the kagent ModelConfig CR the Agent uses.
 	// The registry can't know cluster ModelConfig names, so it's injected.
 	ModelConfigRef string
 	// GatewayURL is the agentgateway base URL MCP tools are reached through,
 	// e.g. "http://agentgateway.agentgateway-system.svc.cluster.local:8080".
-	// Each ToolServer points at {GatewayURL}/mcp/<name>. When empty, the MCP
-	// server's own remote URL (if any) is used instead.
+	// Each RemoteMCPServer points at {GatewayURL}/mcp/<name>. When empty, the
+	// MCP server's own endpoint or legacy remote URL is used instead.
 	GatewayURL string
 	// NameSuffix, when set, is appended to the Agent CR name as "<name>-<suffix>"
 	// so one registry Agent can render multiple variants (e.g. one per provider/
@@ -74,14 +72,14 @@ func (o Options) withDefaults() Options {
 	return o
 }
 
-// Output is the structured render (Agent + its ToolServers).
+// Output is the structured render (Agent + its remote MCP dependencies).
 type Output struct {
-	Agent       map[string]interface{}
-	ToolServers []map[string]interface{}
+	Agent            map[string]interface{}
+	RemoteMCPServers []map[string]interface{}
 }
 
-// Build renders the Agent CR + ToolServer CRs as a single multi-document YAML
-// stream (Agent first, then ToolServers sorted by name).
+// Build renders the Agent CR + RemoteMCPServer CRs as a single multi-document
+// YAML stream (Agent first, then remote servers sorted by name).
 func Build(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Options) ([]byte, error) {
 	out, err := BuildOutput(agent, mcpServers, opts)
 	if err != nil {
@@ -93,7 +91,7 @@ func Build(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Options) ([
 	if err := enc.Encode(out.Agent); err != nil {
 		return nil, err
 	}
-	for _, m := range out.ToolServers {
+	for _, m := range out.RemoteMCPServers {
 		if err := enc.Encode(m); err != nil {
 			return nil, err
 		}
@@ -115,7 +113,8 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 		return Output{}, fmt.Errorf("agent has no name")
 	}
 
-	// Render a ToolServer per MCP dependency and collect tool refs.
+	// Render a RemoteMCPServer per MCP dependency and collect least-privilege
+	// tool refs. kagent limits one server reference to 50 explicit tools.
 	seen := map[string]bool{}
 	var toolDocs []map[string]interface{}
 	var toolRefs []interface{}
@@ -129,10 +128,18 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 			continue
 		}
 		seen[san] = true
+		tools, err := allowedToolNames(agent, srv)
+		if err != nil {
+			return Output{}, fmt.Errorf("MCP server %s: %w", raw, err)
+		}
+		url := mcpURL(srv, san, opts)
+		if url == "" {
+			return Output{}, fmt.Errorf("MCP server %s: endpoint is required", raw)
+		}
 
 		toolDocs = append(toolDocs, map[string]interface{}{
-			"apiVersion": kagentAPIVersion,
-			"kind":       "ToolServer",
+			"apiVersion": kagentAgentAPIVersion,
+			"kind":       "RemoteMCPServer",
 			"metadata": map[string]interface{}{
 				"name":      san,
 				"namespace": opts.Namespace,
@@ -140,18 +147,17 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 			},
 			"spec": map[string]interface{}{
 				"description": stringField(srv, "description"),
-				"config": map[string]interface{}{
-					"type": "StreamableHttp",
-					"streamableHttp": map[string]interface{}{
-						"url": mcpURL(srv, san, opts),
-					},
-				},
+				"url":         url,
+				"protocol":    mcpProtocol(srv, opts),
 			},
 		})
 		toolRefs = append(toolRefs, map[string]interface{}{
 			"type": "McpServer",
 			"mcpServer": map[string]interface{}{
-				"toolServer": san,
+				"apiGroup":  "kagent.dev",
+				"kind":      "RemoteMCPServer",
+				"name":      san,
+				"toolNames": tools,
 			},
 		})
 	}
@@ -186,6 +192,7 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 	kind := "Agent"
 	if opts.WorkerPoolRef != "" {
 		kind = "SandboxAgent"
+		agentSpec["platform"] = "substrate"
 		// workerPoolRef is an object reference {name[, apiGroup, kind]}, NOT a
 		// bare string — the SandboxAgent CRD rejects a string (verified against
 		// the live cluster via server-side dry-run).
@@ -206,7 +213,7 @@ func BuildOutput(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Optio
 		"spec": agentSpec,
 	}
 
-	return Output{Agent: agentDoc, ToolServers: toolDocs}, nil
+	return Output{Agent: agentDoc, RemoteMCPServers: toolDocs}, nil
 }
 
 func managedLabels(agent string) map[string]interface{} {
@@ -236,6 +243,9 @@ func mcpURL(srv v1alpha1.Object, san string, opts Options) string {
 	if opts.GatewayURL != "" {
 		return strings.TrimRight(opts.GatewayURL, "/") + "/mcp/" + san
 	}
+	if endpoint, ok := srv.Spec["endpoint"].(string); ok && endpoint != "" {
+		return endpoint
+	}
 	if remotes, ok := srv.Spec["remotes"].([]interface{}); ok {
 		for _, r := range remotes {
 			if m, ok := r.(map[string]interface{}); ok {
@@ -246,6 +256,66 @@ func mcpURL(srv v1alpha1.Object, san string, opts Options) string {
 		}
 	}
 	return ""
+}
+
+func mcpProtocol(srv v1alpha1.Object, opts Options) string {
+	if opts.GatewayURL != "" {
+		return "STREAMABLE_HTTP"
+	}
+	if transport, ok := srv.Spec["transport"].(string); ok && strings.EqualFold(transport, "sse") {
+		return "SSE"
+	}
+	return "STREAMABLE_HTTP"
+}
+
+func allowedToolNames(agent, srv v1alpha1.Object) ([]interface{}, error) {
+	serverTools := stringRefs(srv.Spec["tools"])
+	if len(serverTools) == 0 {
+		return nil, fmt.Errorf("declared tools are required")
+	}
+	agentTools := stringRefs(agent.Spec["tools"])
+	selected := make(map[string]bool, len(agentTools))
+	for _, name := range agentTools {
+		selected[name] = true
+	}
+	tools := make([]interface{}, 0, len(serverTools))
+	seen := make(map[string]bool, len(serverTools))
+	for _, name := range serverTools {
+		if name == "" || seen[name] || (len(selected) > 0 && !selected[name]) {
+			continue
+		}
+		seen[name] = true
+		tools = append(tools, name)
+	}
+	if len(tools) == 0 {
+		return nil, fmt.Errorf("declared tools do not intersect the agent allowlist")
+	}
+	if len(tools) > 50 {
+		return nil, fmt.Errorf("declared tools exceed kagent's 50-tool limit")
+	}
+	return tools, nil
+}
+
+func stringRefs(value interface{}) []string {
+	values, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	refs := make([]string, 0, len(values))
+	for _, value := range values {
+		switch typed := value.(type) {
+		case string:
+			refs = append(refs, typed)
+		case map[string]interface{}:
+			for _, key := range []string{"name", "ref"} {
+				if name, ok := typed[key].(string); ok && name != "" {
+					refs = append(refs, name)
+					break
+				}
+			}
+		}
+	}
+	return refs
 }
 
 // systemMessage prefers an explicit override (a promptRef the export resolved),
@@ -298,12 +368,6 @@ func Validate(agent v1alpha1.Object, mcpServers []v1alpha1.Object, opts Options)
 		issues = append(issues, Issue{
 			"error", "spec.declarative.systemMessage",
 			"empty — the controller rejects an agent with no system message; set spec.systemPrompt inline or a resolvable spec.promptRef → Prompt.spec.systemPrompt",
-		})
-	}
-	if _, hasTools := decl["tools"]; hasTools {
-		issues = append(issues, Issue{
-			"warning", "spec.declarative.tools",
-			"tools render as v1alpha1 ToolServer refs; kagent 0.9 prefers RemoteMCPServer + toolNames (port pending)",
 		})
 	}
 	// SandboxAgent (Agent Substrate) must pin a WorkerPool to schedule its Actor.

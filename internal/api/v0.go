@@ -54,7 +54,7 @@ func (s *Server) mountV0(r chi.Router) {
 			r.Put("/{resourceType}/{name}", s.v0AgentgatewayPut)
 			r.Delete("/{resourceType}/{name}", s.v0AgentgatewayDelete)
 		})
-		// kagent: every (optionally label-filtered) agent → Agent + ToolServer
+		// kagent: every (optionally label-filtered) agent → Agent + RemoteMCPServer
 		// CRs, applied by the kagent agent-sync Job.
 		r.Get("/export/kagent", s.v0ExportKagentAll)
 
@@ -75,7 +75,7 @@ func (s *Server) mountV0(r chi.Router) {
 			// the runtime + the kagent/agentgateway export adapters.
 			r.Get("/{name}/resolved", s.v0AgentResolved)
 			r.Get("/{name}/{tag}/resolved", s.v0AgentResolvedTag)
-			// kagent export (Agent kind only): the agent + a ToolServer per
+			// kagent export (Agent kind only): the agent + a RemoteMCPServer per
 			// resolved MCP dependency, as applyable kagent.dev YAML.
 			r.Get("/{name}/export/kagent", s.v0ExportKagent)
 			r.Get("/{name}/{tag}", s.v0Get)
