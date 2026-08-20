@@ -324,6 +324,21 @@ func validateGraphSpec(spec map[string]interface{}) []FieldError {
 // MCPServer stays server.json-lenient (it is the OCI MCP Registry interop
 // contract). We only require a name; packages/remotes shape is not enforced.
 func validateMCPSpec(spec map[string]interface{}) []FieldError {
+	if raw, present := spec["credentialRef"]; present {
+		ref, ok := raw.(map[string]interface{})
+		if !ok {
+			return []FieldError{{"spec.credentialRef", "must be an object"}}
+		}
+		// The upstream credential is brokered by the gateway from a Secret the
+		// platform owns; the catalog only ever carries the reference.
+		errs := findSecretFields(ref, "spec.credentialRef")
+		if name, _ := ref["secretName"].(string); name == "" {
+			errs = append(errs, FieldError{"spec.credentialRef.secretName", "required: name the Secret the gateway reads the credential from"})
+		}
+		if len(errs) > 0 {
+			return errs
+		}
+	}
 	if _, ok := spec["name"]; !ok {
 		// The publish paths set metadata.name; spec.name is the server.json
 		// field. Only flag when the spec is clearly a server body missing its

@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { ShieldCheck, Fingerprint } from "lucide-react";
 import { type Artifact, visibilityClass, userLabels } from "../lib/api";
+import ProbeBadge from "./ProbeBadge";
 
 export default function ArtifactCard({ plural, a }: { plural: string; a: Artifact }) {
   const title = (a.spec?.title as string) || a.metadata.name;
@@ -24,9 +25,12 @@ export default function ArtifactCard({ plural, a }: { plural: string; a: Artifac
             {a.metadata.name}
           </div>
         </div>
-        <span className={`chip shrink-0 ${visibilityClass(a.metadata.visibility)}`}>
-          {a.metadata.visibility ?? "private"}
-        </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {a.kind === "MCPServer" && <ProbeBadge server={a} />}
+          <span className={`chip ${visibilityClass(a.metadata.visibility)}`}>
+            {a.metadata.visibility ?? "private"}
+          </span>
+        </div>
       </div>
 
       {desc && (

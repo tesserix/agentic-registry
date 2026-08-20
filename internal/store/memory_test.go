@@ -251,3 +251,38 @@ func TestAutoVersionBumpsWhenContentChanges(t *testing.T) {
 		t.Fatalf("want 2 tags, got %d: %v", len(tags), tags)
 	}
 }
+
+func TestMergeStatus_AddsObservationWithoutTouchingSpecOrLifecycle(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	if _, _, err := m.Apply(ctx, mkSkill("probed", "public", nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := map[string]interface{}{"observedHash": "sha256:abc", "observedTools": []string{"a"}}
+	if err := m.MergeStatus(ctx, v1alpha1.KindSkill, v1alpha1.DefaultNamespace, "probed", v1alpha1.DefaultTag, patch); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := m.Get(ctx, v1alpha1.KindSkill, v1alpha1.DefaultNamespace, "probed", v1alpha1.DefaultTag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status["observedHash"] != "sha256:abc" {
+		t.Errorf("observation not merged: %v", got.Status)
+	}
+	if got.Status["status"] != "active" {
+		t.Errorf("lifecycle status must survive the merge: %v", got.Status["status"])
+	}
+	if got.Spec["description"] != "test probed" {
+		t.Errorf("spec must not change: %v", got.Spec)
+	}
+}
+
+func TestMergeStatus_UnknownArtifact(t *testing.T) {
+	m := NewMemory()
+	err := m.MergeStatus(context.Background(), v1alpha1.KindSkill, v1alpha1.DefaultNamespace, "ghost", v1alpha1.DefaultTag, map[string]interface{}{"a": 1})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("want ErrNotFound, got %v", err)
+	}
+}

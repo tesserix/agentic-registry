@@ -200,3 +200,44 @@ result through the owning GitOps/controller process. kagent uses
 `/v0/export/kagent`; generic consumers use `/v0/{collection}` and A2A Agent
 Cards. Provider and model credentials remain in the Agent Gateway secret
 boundary and never enter Registry.
+
+### Tenant-scoped MCP routes
+
+The MCP export renders one route per server at `/mcp/<tenant>/<server>`, where
+the tenant is the `mcp.tesserix.app/tenant` label, falling back to the artifact
+namespace. Four query params control the rollout:
+
+| Param | Default | Effect |
+|-------|---------|--------|
+| `namespace` | all | comma-separated list of tenant namespaces to export |
+| `legacyFlatPath` | `true` | also match the pre-tenancy `/mcp/<server>` path |
+| `requireServerScope` | `false` | render an authorization policy per route requiring scope `mcp:<tenant>:<server>` |
+| `scopeClaim` | — | JWT claim the per-server scope is read from |
+
+Turn `requireServerScope` on only after every caller's machine identity has been
+granted its `mcp:<tenant>:<server>` role: the policy denies a token that does not
+carry it, and the gateway role alone stops being sufficient.
+
+### Brokered upstream credentials
+
+An MCP server whose upstream needs an API key declares only a reference:
+
+```yaml
+spec:
+  credentialRef:
+    secretName: jira-mcp-upstream
+    key: token
+    header: Authorization
+    prefix: "Bearer "
+```
+
+The export renders an `AgentgatewayPolicy` that points the backend's
+`backend.auth.secretRef` at that Secret, so Agent Gateway reads the credential
+from the platform's secret boundary and injects it on the way out. The caller
+presents only its own Zitadel token and never holds the upstream credential.
+
+Registry stores the reference, never the material: a manifest carrying an inline
+`value`, `token`, `apiKey`, `secret` or `password` under `credentialRef` is
+rejected at `/v0/apply`, and the export rejects it again before rendering. The
+Secret itself follows the usual split — a platform credential comes from GCP
+Secret Manager via External Secrets, a tenant's credential from OpenBao.
