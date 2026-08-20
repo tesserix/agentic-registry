@@ -31,32 +31,39 @@ import (
 // routing config (AgentgatewayBackend + HTTPRoute) as one multi-doc YAML
 // stream. Query params:
 //
-//	namespace        registry namespace to read MCP servers from (default: DefaultNamespace)
-//	targetNamespace  namespace the rendered objects are created in (default: agentgateway-system)
-//	gateway          HTTPRoute parentRef gateway name (default: agentgateway)
+//	namespace           comma-separated registry namespaces — one per tenant (default: DefaultNamespace)
+//	targetNamespace     namespace the rendered objects are created in (default: agentgateway-system)
+//	gateway             HTTPRoute parentRef gateway name (default: agentgateway)
+//	requireServerScope  render a per-server authorization policy (default: false)
+//	scopeClaim          JWT claim the per-server scope is read from
+//	legacyFlatPath      also serve the pre-tenancy /mcp/<server> path (default: true)
 func (s *Server) v0ExportAgentgateway(w http.ResponseWriter, r *http.Request) {
-	ns := r.URL.Query().Get("namespace")
-	if ns == "" {
-		ns = v1alpha1.DefaultNamespace
+	namespaces := exportNamespaces(r.URL.Query().Get("namespace"))
+	servers := make([]v1alpha1.Object, 0, len(namespaces))
+	for _, ns := range namespaces {
+		res, err := s.store.List(r.Context(), store.ListOptions{
+			Kind:       v1alpha1.KindMCPServer,
+			Namespace:  ns,
+			LatestOnly: true,
+			CanRead:    readPredicate(r),
+		})
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, o := range res.Items {
+			servers = append(servers, s.withIdentity(o))
+		}
 	}
-	res, err := s.store.List(r.Context(), store.ListOptions{
-		Kind:       v1alpha1.KindMCPServer,
-		Namespace:  ns,
-		LatestOnly: true,
-		CanRead:    readPredicate(r),
-	})
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	servers := make([]v1alpha1.Object, 0, len(res.Items))
-	for _, o := range res.Items {
-		servers = append(servers, s.withIdentity(o))
-	}
+	legacyFlatPath := queryBool(r, "legacyFlatPath", true)
 	out, err := agentgateway.Build(servers, agentgateway.Options{
-		Namespace:        r.URL.Query().Get("targetNamespace"),
-		GatewayName:      r.URL.Query().Get("gateway"),
-		GatewayNamespace: r.URL.Query().Get("gatewayNamespace"),
+		Namespace:          r.URL.Query().Get("targetNamespace"),
+		GatewayName:        r.URL.Query().Get("gateway"),
+		GatewayNamespace:   r.URL.Query().Get("gatewayNamespace"),
+		DefaultTenant:      namespaces[0],
+		LegacyFlatPath:     &legacyFlatPath,
+		RequireServerScope: queryBool(r, "requireServerScope", false),
+		ScopeClaim:         r.URL.Query().Get("scopeClaim"),
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -106,6 +113,37 @@ func (s *Server) v0ExportAgentgateway(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Agentgateway-Resource-Count", strconv.Itoa(countYAMLResources(out)))
 	w.Header().Set("X-Agentgateway-Resource-Digest", fmt.Sprintf("sha256:%x", digest))
 	writeYAML(w, out)
+}
+
+// exportNamespaces splits the comma-separated tenant list, preserving order so
+// the first entry stays the default tenant for servers that declare none.
+func exportNamespaces(raw string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, ns := range strings.Split(raw, ",") {
+		ns = strings.TrimSpace(ns)
+		if ns == "" || seen[ns] {
+			continue
+		}
+		seen[ns] = true
+		out = append(out, ns)
+	}
+	if len(out) == 0 {
+		return []string{v1alpha1.DefaultNamespace}
+	}
+	return out
+}
+
+func queryBool(r *http.Request, name string, fallback bool) bool {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return value
 }
 
 func gatewayResourceOrder(kind, name string) string {

@@ -26,9 +26,22 @@ import (
 
 const (
 	httpRouteAPIVersion = "gateway.networking.k8s.io/v1"
+	httpRouteGroup      = "gateway.networking.k8s.io"
+	httpRouteKind       = "HTTPRoute"
 	backendAPIVersion   = "agentgateway.dev/v1alpha1"
 	backendKind         = "AgentgatewayBackend"
 	backendGroup        = "agentgateway.dev"
+	policyKind          = "AgentgatewayPolicy"
+
+	// tenantLabel names the tenant that owns an MCP server. It decides the
+	// route's path segment, its resource names and its required scope, so a
+	// server may not change tenant without changing all three.
+	tenantLabel = "mcp.tesserix.app/tenant"
+
+	defaultTenant = "default"
+	// defaultScopeClaim is Zitadel's project-agnostic roles claim. Deployments
+	// that pin the audience use the project-scoped claim instead.
+	defaultScopeClaim = "urn:zitadel:iam:org:project:roles"
 )
 
 // Options controls where the rendered routes attach.
@@ -40,6 +53,19 @@ type Options struct {
 	GatewayNamespace string
 	// PathPrefix is prepended to each server's path. Defaults to "/mcp".
 	PathPrefix string
+	// DefaultTenant owns servers that declare no tenant label and no
+	// namespace. Defaults to "default".
+	DefaultTenant string
+	// LegacyFlatPath also serves each route at the pre-tenancy /mcp/<server>
+	// path, so callers can migrate to /mcp/<tenant>/<server> without a flag
+	// day. Only rendered where <server> is unambiguous across tenants.
+	LegacyFlatPath *bool
+	// RequireServerScope renders an AgentgatewayPolicy per route demanding the
+	// mcp:<tenant>:<server> scope. Off by default: the gateway denies every
+	// caller that has not been granted the scope in the identity provider yet.
+	RequireServerScope bool
+	// ScopeClaim is the JWT claim the scope is read from.
+	ScopeClaim string
 }
 
 func (o Options) withDefaults() Options {
@@ -55,6 +81,16 @@ func (o Options) withDefaults() Options {
 	if o.PathPrefix == "" {
 		o.PathPrefix = "/mcp"
 	}
+	if o.DefaultTenant == "" {
+		o.DefaultTenant = defaultTenant
+	}
+	if o.ScopeClaim == "" {
+		o.ScopeClaim = defaultScopeClaim
+	}
+	if o.LegacyFlatPath == nil {
+		enabled := true
+		o.LegacyFlatPath = &enabled
+	}
 	return o
 }
 
@@ -69,11 +105,18 @@ type target struct {
 // Route is the rendered routing for a single MCP server.
 type Route struct {
 	ServerName string // original registry name
-	Name       string // sanitized resource/path name
-	Path       string // "/mcp/<name>"
+	Tenant     string // owning tenant
+	Server     string // sanitized server name
+	Name       string // sanitized resource name, "<tenant>-<server>"
+	Path       string // "/mcp/<tenant>/<server>"
+	Scope      string // "mcp:<tenant>:<server>"
 	Target     target
 	Backend    map[string]interface{}
 	HTTPRoute  map[string]interface{}
+	Policy     map[string]interface{} // nil unless RequireServerScope
+	// CredentialPolicy injects the upstream credential from a vault-backed
+	// Secret. Nil unless the server declares a credentialRef.
+	CredentialPolicy map[string]interface{}
 }
 
 // Build renders Backend + HTTPRoute objects for every MCP server as a single
@@ -96,6 +139,16 @@ func Build(servers []v1alpha1.Object, opts Options) ([]byte, error) {
 		if err := enc.Encode(r.HTTPRoute); err != nil {
 			return nil, err
 		}
+		if r.Policy != nil {
+			if err := enc.Encode(r.Policy); err != nil {
+				return nil, err
+			}
+		}
+		if r.CredentialPolicy != nil {
+			if err := enc.Encode(r.CredentialPolicy); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := enc.Close(); err != nil {
 		return nil, err
@@ -108,6 +161,7 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 	opts = opts.withDefaults()
 	seen := map[string]bool{}
 	routes := make([]Route, 0, len(servers))
+	tenantsPerServer := serverTenantCount(servers, opts)
 
 	for _, srv := range servers {
 		name := serverName(srv)
@@ -115,26 +169,30 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 			continue
 		}
 		san := adapters.SanitizeName(name)
-		if seen[san] {
+		tenant := tenantFor(srv, opts)
+		resourceName := tenant + "-" + san
+		if seen[resourceName] {
 			continue
 		}
-		seen[san] = true
+		seen[resourceName] = true
 
 		tgt, ok := targetFor(srv)
 		if !ok {
 			continue
 		}
-		path := opts.PathPrefix + "/" + san
+		path := opts.PathPrefix + "/" + tenant + "/" + san
+		scope := "mcp:" + tenant + ":" + san
 		labels := map[string]interface{}{
 			"app.kubernetes.io/managed-by": "agentic-registry",
 			"registry.agentic.dev/mcp":     san,
+			"mcp.tesserix.app/tenant":      tenant,
 		}
 
 		backend := map[string]interface{}{
 			"apiVersion": backendAPIVersion,
 			"kind":       backendKind,
 			"metadata": map[string]interface{}{
-				"name":      san,
+				"name":      resourceName,
 				"namespace": opts.Namespace,
 				"labels":    labels,
 			},
@@ -155,11 +213,28 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 			},
 		}
 
+		matches := []interface{}{
+			map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":  "PathPrefix",
+					"value": path,
+				},
+			},
+		}
+		if *opts.LegacyFlatPath && tenantsPerServer[san] == 1 {
+			matches = append(matches, map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":  "PathPrefix",
+					"value": opts.PathPrefix + "/" + san,
+				},
+			})
+		}
+
 		httpRoute := map[string]interface{}{
 			"apiVersion": httpRouteAPIVersion,
-			"kind":       "HTTPRoute",
+			"kind":       httpRouteKind,
 			"metadata": map[string]interface{}{
-				"name":      san,
+				"name":      resourceName,
 				"namespace": opts.Namespace,
 				"labels":    labels,
 			},
@@ -172,19 +247,12 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 				},
 				"rules": []interface{}{
 					map[string]interface{}{
-						"matches": []interface{}{
-							map[string]interface{}{
-								"path": map[string]interface{}{
-									"type":  "PathPrefix",
-									"value": path,
-								},
-							},
-						},
+						"matches": matches,
 						"backendRefs": []interface{}{
 							map[string]interface{}{
 								"group": backendGroup,
 								"kind":  backendKind,
-								"name":  san,
+								"name":  resourceName,
 							},
 						},
 					},
@@ -192,18 +260,159 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 			},
 		}
 
+		var policy map[string]interface{}
+		if opts.RequireServerScope {
+			policy = scopePolicy(resourceName, scope, labels, opts)
+		}
+
+		credential, err := credentialPolicy(srv, resourceName, labels, opts)
+		if err != nil {
+			return nil, fmt.Errorf("mcp server %s: %w", name, err)
+		}
+
 		routes = append(routes, Route{
 			ServerName: name,
-			Name:       san,
+			Tenant:     tenant,
+			Server:     san,
+			Name:       resourceName,
 			Path:       path,
+			Scope:      scope,
 			Target:     tgt,
 			Backend:    backend,
 			HTTPRoute:  httpRoute,
+			Policy:     policy,
+
+			CredentialPolicy: credential,
 		})
 	}
 
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Name < routes[j].Name })
 	return routes, nil
+}
+
+// scopePolicy renders the per-route authorization: a caller reaches this one
+// server only if its token carries that server's scope. Without it the coarse
+// gateway-wide role grants every MCP server on the origin.
+func scopePolicy(resourceName, scope string, labels map[string]interface{}, opts Options) map[string]interface{} {
+	return map[string]interface{}{
+		"apiVersion": backendAPIVersion,
+		"kind":       policyKind,
+		"metadata": map[string]interface{}{
+			"name":      resourceName,
+			"namespace": opts.Namespace,
+			"labels":    labels,
+		},
+		"spec": map[string]interface{}{
+			"targetRefs": []interface{}{
+				map[string]interface{}{
+					"group": httpRouteGroup,
+					"kind":  httpRouteKind,
+					"name":  resourceName,
+				},
+			},
+			"traffic": map[string]interface{}{
+				"authorization": map[string]interface{}{
+					"action": "Allow",
+					"policy": map[string]interface{}{
+						"matchExpressions": []interface{}{
+							fmt.Sprintf("%q in jwt[%q]", scope, opts.ScopeClaim),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// inlineCredentialFields are the shapes a literal secret would take in a
+// manifest. The registry is a catalog, not a vault: a credential reaches the
+// gateway only as a reference to a Secret the platform controls.
+var inlineCredentialFields = []string{"value", "token", "apiKey", "secret", "password"}
+
+// credentialPolicy renders the brokered upstream credential: the gateway reads
+// the Secret and injects it, so the calling agent never holds the upstream key
+// and only ever presents its own identity token.
+func credentialPolicy(srv v1alpha1.Object, resourceName string, labels map[string]interface{}, opts Options) (map[string]interface{}, error) {
+	raw, ok := srv.Spec["credentialRef"].(map[string]interface{})
+	if !ok || len(raw) == 0 {
+		return nil, nil
+	}
+	for _, field := range inlineCredentialFields {
+		if _, present := raw[field]; present {
+			return nil, fmt.Errorf("credentialRef.%s carries credential material; reference a Secret instead", field)
+		}
+	}
+	secretName, _ := raw["secretName"].(string)
+	if secretName == "" {
+		return nil, fmt.Errorf("credentialRef must name a Secret via secretName")
+	}
+
+	secretRef := map[string]interface{}{"name": secretName}
+	if key, _ := raw["key"].(string); key != "" {
+		secretRef["key"] = key
+	}
+	auth := map[string]interface{}{"secretRef": secretRef}
+	if header, _ := raw["header"].(string); header != "" {
+		location := map[string]interface{}{"name": header}
+		if prefix, _ := raw["prefix"].(string); prefix != "" {
+			location["prefix"] = prefix
+		}
+		auth["location"] = map[string]interface{}{"header": location}
+	}
+
+	return map[string]interface{}{
+		"apiVersion": backendAPIVersion,
+		"kind":       policyKind,
+		"metadata": map[string]interface{}{
+			"name":      resourceName + "-credential",
+			"namespace": opts.Namespace,
+			"labels":    labels,
+		},
+		"spec": map[string]interface{}{
+			"targetRefs": []interface{}{
+				map[string]interface{}{
+					"group": backendGroup,
+					"kind":  backendKind,
+					"name":  resourceName,
+				},
+			},
+			"backend": map[string]interface{}{"auth": auth},
+		},
+	}, nil
+}
+
+// tenantFor resolves the owning tenant: the explicit label, else the registry
+// namespace the server was published into, else the export's default.
+func tenantFor(srv v1alpha1.Object, opts Options) string {
+	if t := srv.Metadata.Labels[tenantLabel]; t != "" {
+		return adapters.SanitizeName(t)
+	}
+	if srv.Metadata.Namespace != "" {
+		return adapters.SanitizeName(srv.Metadata.Namespace)
+	}
+	return adapters.SanitizeName(opts.DefaultTenant)
+}
+
+// serverTenantCount counts how many tenants publish each server name. A name
+// claimed by two tenants can have no unambiguous flat path.
+func serverTenantCount(servers []v1alpha1.Object, opts Options) map[string]int {
+	tenants := map[string]map[string]bool{}
+	for _, srv := range servers {
+		name := serverName(srv)
+		if name == "" || isDirectory(srv) {
+			continue
+		}
+		san := adapters.SanitizeName(name)
+		if tenants[san] == nil {
+			tenants[san] = map[string]bool{}
+		}
+		tenants[san][tenantFor(srv, opts)] = true
+	}
+	counts := make(map[string]int, len(tenants))
+	for san, set := range tenants {
+		counts[san] = len(set)
+	}
+	return counts
 }
 
 // serverName prefers spec.name, falling back to metadata.name.

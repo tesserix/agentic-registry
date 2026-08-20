@@ -1,6 +1,9 @@
 package v1alpha1
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidateSpec_Agent(t *testing.T) {
 	cases := []struct {
@@ -115,5 +118,43 @@ func TestGatewayResourceValidationRejectsUnsafeKubernetesObjects(t *testing.T) {
 				t.Fatalf("expected unsafe GatewayResource to be rejected: %#v", spec)
 			}
 		})
+	}
+}
+
+func TestValidateSpec_MCPCredentialRefMustReferenceASecret(t *testing.T) {
+	err := ValidateSpec(KindMCPServer, map[string]interface{}{
+		"name":          "jira-mcp",
+		"credentialRef": map[string]interface{}{"key": "token"},
+	})
+	if err == nil {
+		t.Fatal("a credentialRef naming no Secret must be rejected at publish time")
+	}
+}
+
+func TestValidateSpec_MCPCredentialMaterialIsRejectedAtPublish(t *testing.T) {
+	err := ValidateSpec(KindMCPServer, map[string]interface{}{
+		"name": "jira-mcp",
+		"credentialRef": map[string]interface{}{
+			"secretName": "jira-upstream",
+			"token":      "ghp_live_value",
+		},
+	})
+	if err == nil {
+		t.Fatal("the registry must never accept credential material in a manifest")
+	}
+	if !strings.Contains(err.Error(), "credentialRef.token") {
+		t.Errorf("error must name the offending field: %v", err)
+	}
+}
+
+func TestValidateSpec_MCPCredentialRefIsOptional(t *testing.T) {
+	if err := ValidateSpec(KindMCPServer, map[string]interface{}{
+		"name":          "jira-mcp",
+		"credentialRef": map[string]interface{}{"secretName": "jira-upstream", "key": "token"},
+	}); err != nil {
+		t.Fatalf("a pure reference must be accepted: %v", err)
+	}
+	if err := ValidateSpec(KindMCPServer, map[string]interface{}{"name": "jira-mcp"}); err != nil {
+		t.Fatalf("credentialRef is optional: %v", err)
 	}
 }
