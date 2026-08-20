@@ -78,6 +78,9 @@ func (s *Server) mountV0(r chi.Router) {
 			// kagent export (Agent kind only): the agent + a RemoteMCPServer per
 			// resolved MCP dependency, as applyable kagent.dev YAML.
 			r.Get("/{name}/export/kagent", s.v0ExportKagent)
+			// Capability probe results (MCPServer kind only): what the server
+			// actually serves, compared against what it declares.
+			r.Put("/{name}/status", s.v0PutMCPServerStatus)
 			r.Get("/{name}/{tag}", s.v0Get)
 			r.Delete("/{name}/{tag}", s.v0Delete)
 		})

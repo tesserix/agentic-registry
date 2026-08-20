@@ -33,6 +33,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -o /out/agentic-registry ./cmd/agentic-registry
 
+# The capability prober ships in the same image: it shares the export adapter
+# with the server, so a route the gateway serves and a route the probe dials
+# can never drift apart across two independently built artifacts.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-s -w" \
+    -trimpath \
+    -o /out/agentic-probe ./cmd/agentic-probe
+
 # Named runtime user `aregistry` at uid 1000 (tesserix backend convention,
 # same uid devai/fanzone use). distroless has no shell to adduser, so the
 # passwd/group entries are created here and copied into the final image.
@@ -45,6 +53,7 @@ FROM ghcr.io/tesserix/base-distroless-static:latest@sha256:f1e15d54e77ca5135969d
 WORKDIR /app
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build --chown=aregistry:aregistry /out/agentic-registry /app/agentic-registry
+COPY --from=build --chown=aregistry:aregistry /out/agentic-probe    /app/agentic-probe
 COPY --from=web   --chown=aregistry:aregistry /web/dist             /app/web
 ENV ADDR=:8080 \
     STORE_BACKEND=postgres \

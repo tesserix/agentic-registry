@@ -379,6 +379,25 @@ func (m *Memory) Delete(_ context.Context, kind v1alpha1.Kind, ns, name, tag str
 	return nil
 }
 
+func (m *Memory) MergeStatus(_ context.Context, kind v1alpha1.Kind, ns, name, tag string, patch map[string]interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o, ok := m.objs[key(kind, ns, name, tag)]
+	if !ok {
+		return ErrNotFound
+	}
+	merged := map[string]interface{}{}
+	for k, v := range o.Status {
+		merged[k] = v
+	}
+	for k, v := range patch {
+		merged[k] = v
+	}
+	o.Status = merged
+	m.objs[key(kind, ns, name, tag)] = o
+	return nil
+}
+
 func (m *Memory) SetStatus(_ context.Context, kind v1alpha1.Kind, ns, name, tag, status string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

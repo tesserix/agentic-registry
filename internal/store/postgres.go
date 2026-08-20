@@ -574,6 +574,23 @@ func (p *Postgres) Delete(ctx context.Context, kind v1alpha1.Kind, ns, name, tag
 	return nil
 }
 
+func (p *Postgres) MergeStatus(ctx context.Context, kind v1alpha1.Kind, ns, name, tag string, patch map[string]interface{}) error {
+	patchJSON, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("postgres: marshal status patch: %w", err)
+	}
+	const q = `UPDATE registry.artifacts SET status = coalesce(status, '{}'::jsonb) || $5::jsonb
+		WHERE kind=$1 AND namespace=$2 AND name=$3 AND tag=$4`
+	ct, err := p.pool.Exec(ctx, q, string(kind), ns, name, tag, patchJSON)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (p *Postgres) SetStatus(ctx context.Context, kind v1alpha1.Kind, ns, name, tag, status string) error {
 	q := `UPDATE registry.artifacts SET status = jsonb_set(status, '{status}', $5::jsonb)`
 	if status == "deleted" {
