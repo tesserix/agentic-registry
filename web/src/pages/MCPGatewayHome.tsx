@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import {
   ArrowRight,
   Boxes,
-  CheckCircle2,
   Loader2,
   PackageOpen,
   Search,
@@ -13,7 +12,8 @@ import {
   Wrench,
 } from "lucide-react";
 import { api, type Artifact } from "../lib/api";
-import { serverDisplayName } from "../lib/mcpGateway";
+import { serverDisplayName, serverTenant } from "../lib/mcpGateway";
+import ProbeBadge from "../components/ProbeBadge";
 
 function labelsFor(server: Artifact): string[] {
   return Object.values(server.metadata.labels ?? {}).filter(Boolean);
@@ -46,9 +46,7 @@ function ServerCard({ server }: { server: Artifact }) {
         <span className="mcp-server-icon grid h-12 w-12 place-items-center rounded-xl text-[18px] font-bold">
           {displayName.charAt(0) || "M"}
         </span>
-        <span className="flex items-center gap-1.5 rounded-full border border-[var(--ok-soft-bd)] bg-[var(--ok-soft-bg)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--ok-ink)]">
-          <CheckCircle2 className="h-3 w-3" /> Active
-        </span>
+        <ProbeBadge server={server} />
       </div>
 
       <div className="mt-4">
@@ -71,6 +69,7 @@ function ServerCard({ server }: { server: Artifact }) {
             : `${toolCount} ${toolCount === 1 ? "tool" : "tools"}`}
         </span>
         <span className="chip capitalize">{categoryFor(server)}</span>
+        <span className="chip font-mono lowercase">{serverTenant(server)}</span>
         <ArrowRight className="ml-auto h-4 w-4 text-[var(--ink-muted)] transition-transform group-hover:translate-x-1" />
       </div>
     </Link>

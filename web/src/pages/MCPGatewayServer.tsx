@@ -3,7 +3,6 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   Check,
-  CheckCircle2,
   Clipboard,
   Code2,
   ExternalLink,
@@ -11,7 +10,6 @@ import {
   MessageSquareText,
   Package,
   ShieldCheck,
-  TriangleAlert,
   Wrench,
 } from "lucide-react";
 import { api, type ResolvedMCPServer } from "../lib/api";
@@ -20,9 +18,13 @@ import {
   installConfig,
   MCP_GATEWAY_ORIGIN,
   MCP_CLIENTS,
+  probeStatus,
   serverDisplayName,
+  serverScope,
+  serverTenant,
   type McpClient,
 } from "../lib/mcpGateway";
+import ProbeBadge from "../components/ProbeBadge";
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -93,10 +95,11 @@ export default function MCPGatewayServer() {
   const description =
     text(server.spec?.description) ||
     "A managed Model Context Protocol server available through the Tesserix gateway.";
-  const endpoint = gatewayEndpoint(MCP_GATEWAY_ORIGIN, server.metadata.name);
-  const config = installConfig(client, server.metadata.name, MCP_GATEWAY_ORIGIN);
-  const condition = resolved.conditions.find((item) => item.type === "Resolved");
-  const healthy = condition?.status !== "False";
+  const tenant = serverTenant(server);
+  const endpoint = gatewayEndpoint(MCP_GATEWAY_ORIGIN, tenant, server.metadata.name);
+  const config = installConfig(client, tenant, server.metadata.name, MCP_GATEWAY_ORIGIN);
+  const scope = serverScope(server);
+  const probe = probeStatus(server);
   const promptCount = listLength(server.spec?.prompts);
   const resourceCount = listLength(server.spec?.resources);
 
@@ -129,19 +132,13 @@ export default function MCPGatewayServer() {
               </p>
             </div>
           </div>
-          <div
-            className={`flex shrink-0 items-center gap-2 rounded-xl border px-3.5 py-2 text-[12px] ${
-              healthy
-                ? "border-[var(--ok-soft-bd)] bg-[var(--ok-soft-bg)] text-[var(--ok-ink)]"
-                : "border-[var(--warn-soft-bd)] bg-[var(--warn-soft-bg)] text-[var(--warn-ink)]"
-            }`}
-          >
-            {healthy ? (
-              <CheckCircle2 className="h-4 w-4" />
-            ) : (
-              <TriangleAlert className="h-4 w-4" />
-            )}
-            {condition?.message ?? "Server resolved"}
+          <div className="flex shrink-0 flex-col items-start gap-2">
+            <ProbeBadge server={server} showMessage />
+            {probe.lastProbedAt ? (
+              <span className="text-[11px] text-[var(--ink-muted)]">
+                Last probed {probe.lastProbedAt}
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -294,8 +291,10 @@ export default function MCPGatewayServer() {
             </div>
             <p className="mt-3 text-[12px] leading-5 text-[var(--ink-soft)]">
               Every request requires a Zitadel access token with the correct
-              issuer, audience, and <code>agentgateway.mcp</code> role. Limits
-              are isolated per OAuth subject.
+              issuer, audience, and the per-server scope{" "}
+              <code>{scope}</code>. Upstream credentials are brokered by the
+              gateway from the credential vault and are never handed to the
+              agent. Limits are isolated per OAuth subject.
             </p>
           </section>
 

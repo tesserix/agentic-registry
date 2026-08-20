@@ -4,6 +4,7 @@ import { ArrowLeft, Loader2, Tag, ShieldCheck, ShieldAlert, Copy, Check, Fingerp
 import { api, KINDS, type Artifact, type Revision, visibilityClass, userLabels } from "../lib/api";
 import { verifyEd25519 } from "../lib/verify";
 import ArtifactEditor from "../components/ArtifactEditor";
+import McpAccessPanel from "../components/McpAccessPanel";
 import { AdminOnly, useRegistrySession } from "../lib/session";
 // React Flow is heavy — load it only when viewing a Workflow/Blueprint.
 const FlowCanvas = lazy(() => import("../components/FlowCanvas"));
@@ -152,6 +153,8 @@ export default function ArtifactDetail() {
               <SignaturePanel digest={m.digest} signature={m.signature} signedBy={m.signedBy} />
             </div>
           </div>
+
+          {meta.kind === "MCPServer" && <McpAccessPanel server={a} />}
 
           {/* Spec */}
           <div className="card p-5">
