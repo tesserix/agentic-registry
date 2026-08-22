@@ -1,6 +1,7 @@
 package agentgateway
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -221,6 +222,54 @@ func TestBuildRoutes_RemotesWinOverEndpoint(t *testing.T) {
 	}
 	if routes[0].Target.host != "remote.dev" {
 		t.Errorf("spec.remotes[] must win: got %+v", routes[0].Target)
+	}
+}
+
+func TestBuildRoutes_ServiceSelectorUsesIdentityAwareBackend(t *testing.T) {
+	srv := remoteServer("devai-mcp", "http://devai-api.devai.svc.cluster.local:8080/mcp/devai")
+	srv.Spec["serviceSelector"] = map[string]interface{}{
+		"namespaces": map[string]interface{}{
+			"matchLabels": map[string]interface{}{
+				"kubernetes.io/metadata.name": "devai",
+			},
+		},
+		"services": map[string]interface{}{
+			"matchLabels": map[string]interface{}{
+				"app.kubernetes.io/name": "devai-api",
+			},
+		},
+	}
+
+	routes, err := BuildRoutes([]v1alpha1.Object{srv}, Options{Namespace: "agentgateway-system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("want 1 route, got %d", len(routes))
+	}
+
+	spec := routes[0].Backend["spec"].(map[string]interface{})
+	mcp := spec["mcp"].(map[string]interface{})
+	target := mcp["targets"].([]interface{})[0].(map[string]interface{})
+	if _, exists := target["static"]; exists {
+		t.Fatalf("in-cluster selector must not render a raw static target: %+v", target)
+	}
+	want := srv.Spec["serviceSelector"]
+	if !reflect.DeepEqual(want, target["selector"]) {
+		t.Fatalf("selector:\n got %#v\nwant %#v", target["selector"], want)
+	}
+}
+
+func TestBuildRoutes_InvalidServiceSelectorFailsClosed(t *testing.T) {
+	srv := remoteServer("devai-mcp", "http://devai-api.devai.svc.cluster.local:8080/mcp/devai")
+	srv.Spec["serviceSelector"] = map[string]interface{}{
+		"services": map[string]interface{}{
+			"matchLabels": map[string]interface{}{},
+		},
+	}
+
+	if _, err := BuildRoutes([]v1alpha1.Object{srv}, Options{}); err == nil {
+		t.Fatal("empty serviceSelector must be rejected instead of falling back to raw TCP")
 	}
 }
 
