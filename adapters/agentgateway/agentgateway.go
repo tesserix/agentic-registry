@@ -100,6 +100,7 @@ type target struct {
 	port     int
 	path     string
 	protocol string // StreamableHTTP | SSE
+	selector map[string]interface{}
 }
 
 // Route is the rendered routing for a single MCP server.
@@ -176,7 +177,10 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 		}
 		seen[resourceName] = true
 
-		tgt, ok := targetFor(srv)
+		tgt, ok, err := targetFor(srv)
+		if err != nil {
+			return nil, fmt.Errorf("mcp server %s: %w", name, err)
+		}
 		if !ok {
 			continue
 		}
@@ -186,6 +190,18 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 			"app.kubernetes.io/managed-by": "agentic-registry",
 			"registry.agentic.dev/mcp":     san,
 			"mcp.tesserix.app/tenant":      tenant,
+		}
+
+		targetSpec := map[string]interface{}{"name": san}
+		if tgt.selector != nil {
+			targetSpec["selector"] = tgt.selector
+		} else {
+			targetSpec["static"] = map[string]interface{}{
+				"host":     tgt.host,
+				"port":     tgt.port,
+				"path":     tgt.path,
+				"protocol": tgt.protocol,
+			}
 		}
 
 		backend := map[string]interface{}{
@@ -198,17 +214,7 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 			},
 			"spec": map[string]interface{}{
 				"mcp": map[string]interface{}{
-					"targets": []interface{}{
-						map[string]interface{}{
-							"name": san,
-							"static": map[string]interface{}{
-								"host":     tgt.host,
-								"port":     tgt.port,
-								"path":     tgt.path,
-								"protocol": tgt.protocol,
-							},
-						},
-					},
+					"targets": []interface{}{targetSpec},
 				},
 			},
 		}
@@ -423,16 +429,65 @@ func serverName(srv v1alpha1.Object) string {
 	return srv.Metadata.Name
 }
 
-// targetFor resolves where a server's Backend points, from spec.remotes[].url.
-// A server that declares no remote has no resolvable upstream and reports false;
-// guessing an in-cluster Service name here produced routes to Services that
-// never existed.
-func targetFor(srv v1alpha1.Object) (target, bool) {
+// targetFor resolves where a server's Backend points. An explicit Kubernetes
+// Service selector takes precedence over remotes because it lets AgentGateway
+// use WDS/HBONE and preserve its workload identity. Public/SaaS servers retain
+// their static URL target. A server with neither has no resolvable upstream.
+func targetFor(srv v1alpha1.Object) (target, bool, error) {
+	selector, present, err := serviceSelectorFor(srv)
+	if err != nil {
+		return target{}, false, err
+	}
+	if present {
+		return target{selector: selector}, true, nil
+	}
+
 	u, transport := firstRemote(srv)
 	if u == "" {
-		return target{}, false
+		return target{}, false, nil
 	}
-	return parseRemote(u, transport), true
+	return parseRemote(u, transport), true, nil
+}
+
+// serviceSelectorFor accepts the portable Registry extension used for
+// in-cluster MCP Services. Only non-empty matchLabels are supported initially;
+// rejecting malformed or broader shapes prevents an intended identity-aware
+// target from silently degrading to raw TCP.
+func serviceSelectorFor(srv v1alpha1.Object) (map[string]interface{}, bool, error) {
+	value, present := srv.Spec["serviceSelector"]
+	if !present {
+		return nil, false, nil
+	}
+	raw, ok := value.(map[string]interface{})
+	if !ok {
+		return nil, false, fmt.Errorf("serviceSelector must be an object")
+	}
+
+	selector := make(map[string]interface{}, len(raw))
+	for key, value := range raw {
+		if key != "namespaces" && key != "services" {
+			return nil, false, fmt.Errorf("serviceSelector.%s is not supported", key)
+		}
+		part, ok := value.(map[string]interface{})
+		if !ok || len(part) != 1 {
+			return nil, false, fmt.Errorf("serviceSelector.%s must contain only matchLabels", key)
+		}
+		labels, ok := part["matchLabels"].(map[string]interface{})
+		if !ok || len(labels) == 0 {
+			return nil, false, fmt.Errorf("serviceSelector.%s.matchLabels must not be empty", key)
+		}
+		for label, value := range labels {
+			text, ok := value.(string)
+			if !ok || strings.TrimSpace(label) == "" || strings.TrimSpace(text) == "" {
+				return nil, false, fmt.Errorf("serviceSelector.%s.matchLabels must contain non-empty strings", key)
+			}
+		}
+		selector[key] = map[string]interface{}{"matchLabels": labels}
+	}
+	if len(selector) == 0 {
+		return nil, false, fmt.Errorf("serviceSelector must select namespaces or services")
+	}
+	return selector, true, nil
 }
 
 // isDirectory reports whether a server is a directory entry — a third-party MCP
