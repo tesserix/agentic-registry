@@ -93,15 +93,18 @@ func extractScopes(scope, scp interface{}) []string {
 }
 
 func bearerToken(r *http.Request) string {
+	// oauth2-proxy forwards both a browser ID token in Authorization and the
+	// resource-audience access token in this header. The access token carries
+	// the project roles the Registry authorizes; both still undergo full JWT
+	// verification below.
+	if raw := strings.TrimSpace(r.Header.Get("X-Forwarded-Access-Token")); raw != "" {
+		return raw
+	}
 	h := r.Header.Get("Authorization")
 	if len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
 		return strings.TrimSpace(h[7:])
 	}
-	// oauth2-proxy forwards the authenticated browser's access token in this
-	// header when it is the trusted edge. The token still undergoes the same
-	// signature, issuer, audience, algorithm, and expiry validation as a direct
-	// Authorization bearer token; this header is transport, not trust.
-	return strings.TrimSpace(r.Header.Get("X-Forwarded-Access-Token"))
+	return ""
 }
 
 func extractGroups(v interface{}) []string {
