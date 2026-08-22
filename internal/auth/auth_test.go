@@ -25,9 +25,18 @@ func TestBearerTokenAcceptsOAuthProxyForwardedAccessToken(t *testing.T) {
 	if got := bearerToken(req); got != "verified-upstream-token" {
 		t.Fatalf("bearerToken()=%q", got)
 	}
-	req.Header.Set("Authorization", "Bearer direct-token")
-	if got := bearerToken(req); got != "direct-token" {
-		t.Fatalf("Authorization header must take precedence, got %q", got)
+	req.Header.Set("Authorization", "Bearer browser-id-token")
+	if got := bearerToken(req); got != "verified-upstream-token" {
+		t.Fatalf("forwarded OAuth access token must take precedence over the browser ID token, got %q", got)
+	}
+
+	directReq, err := http.NewRequest(http.MethodGet, "/v0/session", nil)
+	if err != nil {
+		t.Fatalf("direct request: %v", err)
+	}
+	directReq.Header.Set("Authorization", "Bearer direct-token")
+	if got := bearerToken(directReq); got != "direct-token" {
+		t.Fatalf("direct Authorization token must remain supported, got %q", got)
 	}
 }
 
