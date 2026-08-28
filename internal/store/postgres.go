@@ -175,10 +175,14 @@ func (p *Postgres) hasEmbeddingColumn(ctx context.Context) bool {
 	return err == nil && ok
 }
 
-// backfillEmbeddings computes embeddings for any rows missing one (e.g. rows
-// written before the column existed). Cheap for a registry-sized table.
+const embeddingBackfillQuery = "SELECT " + cols + " FROM registry.artifacts WHERE deletion_timestamp IS NULL"
+
+// backfillEmbeddings refreshes every live embedding at startup. The safe discovery
+// projection evolves independently of artifact content, so only filling NULL
+// vectors would leave old rows permanently ranked with stale metadata. This is
+// intentionally simple and bounded by the registry-sized catalog.
 func (p *Postgres) backfillEmbeddings(ctx context.Context) (int, error) {
-	rows, err := p.pool.Query(ctx, "SELECT "+cols+" FROM registry.artifacts WHERE embedding IS NULL")
+	rows, err := p.pool.Query(ctx, embeddingBackfillQuery)
 	if err != nil {
 		return 0, err
 	}

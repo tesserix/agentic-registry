@@ -54,6 +54,41 @@ func TestListVisibilityPreFilterBeforeSelector(t *testing.T) {
 	}
 }
 
+func TestMemorySearchUsesCapabilityMetadata(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	obj := v1alpha1.Object{
+		Kind: v1alpha1.KindTool,
+		Metadata: v1alpha1.ObjectMeta{
+			Name: "scanner",
+			Annotations: map[string]string{
+				"discovery.agentic.dev/when-to-use": "audit application vulnerabilities",
+			},
+		},
+		Spec: map[string]any{
+			"description": "Checks source code",
+			"inputSchema": map[string]any{
+				"properties": map[string]any{
+					"repository": map[string]any{"description": "Git repository to inspect"},
+				},
+			},
+		},
+	}
+	if _, _, err := m.Apply(ctx, obj); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	for _, query := range []string{"application vulnerabilities", "repository to inspect"} {
+		res, err := m.List(ctx, ListOptions{Search: query, LatestOnly: true, Limit: 10})
+		if err != nil {
+			t.Fatalf("List(%q): %v", query, err)
+		}
+		if len(res.Items) != 1 || res.Items[0].Metadata.Name != "scanner" {
+			t.Errorf("List(%q) = %#v", query, res.Items)
+		}
+	}
+}
+
 func TestSoftDeleteHidesFromList(t *testing.T) {
 	m := NewMemory()
 	ctx := context.Background()

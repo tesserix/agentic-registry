@@ -18,6 +18,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/tesserix/agentic-registry/internal/discovery"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
 
@@ -33,25 +34,21 @@ func Text(s string) []float32 {
 	return normalize(v)
 }
 
+// SearchText returns the secret-safe capability document used by both vector
+// and fallback lexical search.
+func SearchText(o v1alpha1.Object) string { return discovery.Text(o) }
+
 // Object builds the embedding of an artifact from the fields a user actually
 // searches by. Name and title are weighted higher than the description and
 // label values so an exact-name query ranks the right artifact first.
 func Object(o v1alpha1.Object) []float32 {
 	v := make([]float64, Dim)
-	addFeatures(v, o.Metadata.Name, 3.0)
+	addFeatures(v, SearchText(o), 1.0)
+	// Preserve the established identity weighting on top of the richer safe
+	// document so exact-name searches remain deterministic.
+	addFeatures(v, o.Metadata.Name, 2.0)
 	if t, ok := o.Spec["title"].(string); ok {
-		addFeatures(v, t, 3.0)
-	}
-	if d, ok := o.Spec["description"].(string); ok {
-		addFeatures(v, d, 1.0)
-	}
-	addFeatures(v, string(o.Kind), 1.0)
-	for k, val := range o.Metadata.Labels {
-		if strings.HasPrefix(k, "registry.agentic.dev/") {
-			continue // server-managed labels aren't user search terms
-		}
-		addFeatures(v, k, 0.5)
-		addFeatures(v, val, 1.0)
+		addFeatures(v, t, 2.0)
 	}
 	return normalize(v)
 }

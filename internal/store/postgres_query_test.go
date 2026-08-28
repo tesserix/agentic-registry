@@ -62,3 +62,12 @@ func TestListScanQueryRanksInsteadOfCollapsingWhenVectorSearching(t *testing.T) 
 		t.Fatalf("query embedding must be a bound parameter, got %v", args)
 	}
 }
+
+func TestEmbeddingBackfillRebuildsDocumentsAfterProjectionChanges(t *testing.T) {
+	if strings.Contains(strings.ToLower(embeddingBackfillQuery), "embedding is null") {
+		t.Fatalf("backfill must refresh existing vectors when the safe search projection changes: %s", embeddingBackfillQuery)
+	}
+	if !strings.Contains(embeddingBackfillQuery, "registry.artifacts") {
+		t.Fatalf("backfill query does not select artifacts: %s", embeddingBackfillQuery)
+	}
+}
