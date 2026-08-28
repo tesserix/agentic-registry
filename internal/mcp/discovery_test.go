@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/tesserix/agentic-registry/internal/signing"
@@ -32,6 +34,69 @@ func seedAgent(t *testing.T, st store.Store) {
 		},
 	}); err != nil {
 		t.Fatalf("seed agent: %v", err)
+	}
+}
+
+func TestSearchToolReturnsSafeKindFilteredStubs(t *testing.T) {
+	st := store.NewMemory()
+	for _, obj := range []v1alpha1.Object{
+		{
+			Kind: v1alpha1.KindTool,
+			Metadata: v1alpha1.ObjectMeta{
+				Name: "scanner", Namespace: "devai", Visibility: v1alpha1.VisibilityPublic,
+			},
+			Spec: map[string]any{
+				"description": "Static application security",
+				"inputSchema": map[string]any{"properties": map[string]any{"repository": map[string]any{"type": "string"}}},
+			},
+		},
+		{
+			Kind: v1alpha1.KindAgent,
+			Metadata: v1alpha1.ObjectMeta{
+				Name: "reviewer", Namespace: "devai", Visibility: v1alpha1.VisibilityPublic,
+			},
+			Spec: map[string]any{
+				"description":  "Static application security",
+				"systemPrompt": "PRIVATE SYSTEM PROMPT",
+			},
+		},
+	} {
+		if _, _, err := st.Apply(context.Background(), obj); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+	}
+	d := &DiscoveryServer{store: st}
+	params, _ := json.Marshal(map[string]any{
+		"name": "search_registry",
+		"arguments": map[string]any{
+			"query": "static application",
+			"kinds": []string{"tools"},
+			"limit": 3,
+		},
+	})
+	req := httptest.NewRequest("POST", "/mcp", nil)
+	result, err := d.callTool(context.Background(), req, params)
+	if err != nil {
+		t.Fatalf("callTool: %v", err)
+	}
+	envelope, _ := result.(map[string]any)
+	content, _ := envelope["content"].([]map[string]any)
+	if len(content) != 1 {
+		t.Fatalf("unexpected envelope: %#v", result)
+	}
+	text, _ := content[0]["text"].(string)
+	if strings.Contains(text, "PRIVATE SYSTEM PROMPT") {
+		t.Fatalf("search leaked an executable body: %s", text)
+	}
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(text), &hits); err != nil {
+		t.Fatalf("decode hits: %v", err)
+	}
+	if len(hits) != 1 || hits[0]["kind"] != "Tool" || hits[0]["name"] != "scanner" {
+		t.Fatalf("unexpected hits: %#v", hits)
+	}
+	if hits[0]["fetchPath"] == "" {
+		t.Fatalf("hit lacks exact fetch path: %#v", hits[0])
 	}
 }
 

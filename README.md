@@ -70,6 +70,8 @@ yourself and point **any** agentic gateway at.
   (`agentgateway`, `kagent`) without the registry ever being on the request path.
 - **Built-in MCP discovery server** — agentic IDEs browse the catalog *through MCP itself*
   (`list_skills`, `get_server`, `search_registry`, …).
+- **Registry-owned semantic discovery** — pgvector ranks a secret-safe projection of capability
+  annotations, relationships, tags, and Tool schemas; gateways fetch exact hits progressively.
 - **Marketplace UI + `agentic` CLI** — browse in the web app; `init`/`apply`/`push`/`pull`/`render`
   from the terminal.
 
@@ -218,7 +220,7 @@ Config lives in `~/.agentic/config.json`. Overridable via `AGENTIC_REGISTRY`,
 
 ```text
 GET    /v0/health
-GET    /v0/{plural}[?namespace=&labelSelector=]    list a kind (skills|tools|mcpservers|prompts|workflows|blueprints|agents)
+GET    /v0/{plural}[?namespace=&labelSelector=]    list a kind (skills|tools|mcpservers|prompts|workflows|blueprints|agents|datasets|evalsuites)
 POST   /v0/{plural}                                 publish a single resource
 GET    /v0/{plural}/{name}                          latest tag
 GET    /v0/{plural}/{name}/{tag}                    a specific tag
@@ -228,7 +230,7 @@ DELETE /v0/{plural}/{name}/{tag}                     delete one version
 POST   /v0/apply                                     multi-doc YAML batch (apply)
 DELETE /v0/apply                                     multi-doc YAML batch (delete)
 POST   /v0/prompts/{name}/render                     → { model, messages, params, tools }
-GET    /v0/search?q=                                 cross-kind ranked search
+GET    /v0/search?q=&kinds=&limit=&view=stub         ranked safe stubs with exact fetch paths
 GET    /v0/signing-key                               public key the registry signs with
 GET    /v0/agents/{name}/.well-known/agent-card.json  A2A agent card
 GET    /v0/{plural}/{name}/resolved                  fully-resolved artifact (refs expanded)
@@ -236,8 +238,9 @@ GET    /v0/export/agentgateway                       export catalog as agentgate
 GET    /v0/export/kagent                             export agents as kagent resources
 ```
 
-`servers` and `mcpservers` are aliases for the `MCPServer` kind; the apiVersion group is
-normalized on ingest.
+`servers`, `mcpservers`, and `mcp-servers` alias `MCPServer`; `evalsuites` and `eval-suites`
+alias `EvalSuite`. The apiVersion group is normalized on ingest. Omitting `view=stub` on search
+retains the artifact-envelope response for compatibility.
 
 ### `/v0.1/*` — MCP Generic Registry interop (verbatim)
 

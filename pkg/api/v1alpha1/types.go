@@ -77,6 +77,8 @@ var kindByPlural = func() map[string]Kind {
 		m[p] = k
 	}
 	m["servers"] = KindMCPServer // devai alias
+	m["mcp-servers"] = KindMCPServer
+	m["eval-suites"] = KindEvalSuite
 	return m
 }()
 
@@ -97,7 +99,8 @@ type ObjectMeta struct {
 	Tag       string            `json:"tag,omitempty" yaml:"tag,omitempty"`
 	UID       string            `json:"uid,omitempty" yaml:"uid,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
-	// Annotations are narrative metadata (not indexed, not queryable).
+	// Annotations are narrative metadata. Approved discovery namespaces are
+	// indexed through a secret-safe projection; arbitrary annotations are not.
 	Annotations map[string]string `json:"annotations,omitempty" yaml:"annotations,omitempty"`
 	// Visibility lives on metadata so it round-trips with the artifact.
 	Visibility Visibility `json:"visibility,omitempty" yaml:"visibility,omitempty"`

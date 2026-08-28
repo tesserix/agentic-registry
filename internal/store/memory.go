@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/tesserix/agentic-registry/internal/embed"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
 
@@ -281,15 +282,7 @@ func filter(in []v1alpha1.Object, opts ListOptions) []v1alpha1.Object {
 
 func matchesSearch(o v1alpha1.Object, q string) bool {
 	q = strings.ToLower(q)
-	if strings.Contains(strings.ToLower(o.Metadata.Name), q) {
-		return true
-	}
-	for _, f := range []string{"title", "description"} {
-		if v, ok := o.Spec[f].(string); ok && strings.Contains(strings.ToLower(v), q) {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(strings.ToLower(embed.SearchText(o)), q)
 }
 
 // collapseLatest keeps the newest tag per (namespace,name).

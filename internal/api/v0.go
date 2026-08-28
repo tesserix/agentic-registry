@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/tesserix/agentic-registry/internal/auth"
+	"github.com/tesserix/agentic-registry/internal/discovery"
 	"github.com/tesserix/agentic-registry/internal/render"
 	"github.com/tesserix/agentic-registry/internal/selector"
 	"github.com/tesserix/agentic-registry/internal/store"
@@ -203,21 +204,47 @@ func (s *Server) v0Search(w http.ResponseWriter, r *http.Request) {
 	// an empty result, so the marketplace/command palette shows the catalog on
 	// open; a non-empty q runs the ranked (pgvector or substring) search.
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(q) > 512 {
+		writeErr(w, http.StatusBadRequest, "q must be at most 512 characters")
+		return
+	}
+	kinds, err := discovery.ParseKinds(r.URL.Query()["kinds"])
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	view := strings.TrimSpace(r.URL.Query().Get("view"))
+	if view != "" && view != "artifact" && view != "stub" {
+		writeErr(w, http.StatusBadRequest, "view must be artifact or stub")
+		return
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 50
 	} else if limit > 200 {
 		limit = 200
 	}
+	rbac := readPredicate(r)
+	canRead := func(obj v1alpha1.Object) bool {
+		return discovery.Allows(kinds, obj.Kind) && rbac(obj)
+	}
 	res, err := s.store.List(r.Context(), store.ListOptions{
 		Namespace:  listNamespace(r), // absent → all readable namespaces
 		Search:     q,                // "" → no search filter (browse)
 		LatestOnly: true,
 		Limit:      limit,
-		CanRead:    readPredicate(r),
+		CanRead:    canRead,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if view == "stub" {
+		out := make([]discovery.Stub, 0, len(res.Items))
+		for _, obj := range res.Items {
+			out = append(out, discovery.BuildStub(s.withIdentity(obj)))
+		}
+		writeJSON(w, http.StatusOK, out)
 		return
 	}
 	out := make([]v1alpha1.Object, 0, len(res.Items))
