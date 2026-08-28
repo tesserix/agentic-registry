@@ -180,7 +180,7 @@ func (s *Server) v0AgentgatewayImport(w http.ResponseWriter, r *http.Request) {
 			writeValidationErr(w, err)
 			return
 		}
-		if !auth.CanWrite(identity(r), artifact.Normalized()) {
+		if !auth.CanPublish(identity(r), artifact.Normalized()) {
 			writeErr(w, http.StatusForbidden, "tenant writer permission required for AgentGateway import")
 			return
 		}

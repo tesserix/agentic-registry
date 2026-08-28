@@ -26,11 +26,20 @@ type Memory struct {
 	now           func() time.Time
 	immutableTags bool
 	autoVersion   bool
+	idempotency   map[string]memoryIdempotency
+}
+
+type memoryIdempotency struct {
+	requestHash string
+	results     []ApplyResult
 }
 
 // NewMemory returns an empty in-memory store.
 func NewMemory() *Memory {
-	return &Memory{objs: map[string]v1alpha1.Object{}, revs: map[string][]Revision{}, now: time.Now}
+	return &Memory{
+		objs: map[string]v1alpha1.Object{}, revs: map[string][]Revision{},
+		idempotency: map[string]memoryIdempotency{}, now: time.Now,
+	}
 }
 
 func revKey(kind v1alpha1.Kind, ns, name string) string {
@@ -142,6 +151,54 @@ func (m *Memory) Apply(_ context.Context, obj v1alpha1.Object) (v1alpha1.Object,
 		})
 	}
 	return obj, !existed, nil
+}
+
+func (m *Memory) ApplyBatch(ctx context.Context, objs []v1alpha1.Object, opts BatchOptions) (BatchResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idempotencyKey := opts.IdempotencyScope + "\x00" + opts.IdempotencyKey
+	if opts.IdempotencyKey != "" {
+		if previous, ok := m.idempotency[idempotencyKey]; ok {
+			if previous.requestHash != opts.RequestHash {
+				return BatchResult{}, ErrIdempotencyConflict
+			}
+			return BatchResult{Items: append([]ApplyResult(nil), previous.results...), Replayed: true}, nil
+		}
+	}
+
+	candidate := &Memory{
+		objs:          make(map[string]v1alpha1.Object, len(m.objs)),
+		revs:          make(map[string][]Revision, len(m.revs)),
+		now:           m.now,
+		immutableTags: m.immutableTags,
+		autoVersion:   m.autoVersion,
+		idempotency:   make(map[string]memoryIdempotency, len(m.idempotency)),
+	}
+	for k, obj := range m.objs {
+		candidate.objs[k] = obj
+	}
+	for k, revisions := range m.revs {
+		candidate.revs[k] = append([]Revision(nil), revisions...)
+	}
+	for k, record := range m.idempotency {
+		candidate.idempotency[k] = record
+	}
+	results := make([]ApplyResult, 0, len(objs))
+	for _, obj := range objs {
+		applied, created, err := candidate.Apply(ctx, obj)
+		if err != nil {
+			return BatchResult{}, err
+		}
+		results = append(results, ApplyResult{Object: applied, Created: created})
+	}
+	m.objs, m.revs = candidate.objs, candidate.revs
+	if opts.IdempotencyKey != "" {
+		m.idempotency[idempotencyKey] = memoryIdempotency{
+			requestHash: opts.RequestHash,
+			results:     append([]ApplyResult(nil), results...),
+		}
+	}
+	return BatchResult{Items: results}, nil
 }
 
 func (m *Memory) ListRevisions(_ context.Context, kind v1alpha1.Kind, ns, name string) ([]Revision, error) {

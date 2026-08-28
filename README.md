@@ -311,6 +311,13 @@ an exact `AUTH_ADMIN_EMAILS` match and the project role named by
 and does not affect tenant-scoped deploy keys or scoped machine identities. See
 [`docs/adr/0002-zitadel-admin-and-machine-integration-boundaries.md`](docs/adr/0002-zitadel-admin-and-machine-integration-boundaries.md).
 
+Tenant publishers sign in interactively with `agentic auth login`. For CI,
+users create a short-lived, namespace/kind-scoped credential under **Settings →
+API credentials** and configure `AGENTIC_CLIENT_ID`,
+`AGENTIC_CLIENT_SECRET`, `AGENTIC_TOKEN_URL`, and `AGENTIC_AUDIENCE`. The CLI
+exchanges those values for a short-lived token in memory; it never persists the
+client secret. See the [CLI credential setup](docs/cli.md#configure).
+
 ---
 
 ## Contributing & governance

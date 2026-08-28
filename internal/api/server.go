@@ -17,6 +17,7 @@ import (
 
 	"github.com/tesserix/agentic-registry/internal/auth"
 	"github.com/tesserix/agentic-registry/internal/config"
+	identityplane "github.com/tesserix/agentic-registry/internal/identity"
 	"github.com/tesserix/agentic-registry/internal/mcp"
 	"github.com/tesserix/agentic-registry/internal/resolve"
 	"github.com/tesserix/agentic-registry/internal/signing"
@@ -41,20 +42,41 @@ type Server struct {
 	cfg      config.Config
 	signer   *signing.Signer
 	resolver *resolve.Resolver // upstream pull-through tool resolver (may be no-op)
+	identity identityplane.ControlPlane
 	reqs     atomic.Int64
 }
 
 // New builds the chi router with all routes mounted.
 func New(st store.Store, authn auth.Authenticator, cfg config.Config) http.Handler {
+	plane := identityplane.ControlPlane(identityplane.DisabledControlPlane{})
+	if cfg.IdentityControlPlaneURL != "" {
+		if client, err := identityplane.NewHTTPControlPlane(cfg.IdentityControlPlaneURL, nil); err == nil {
+			plane = client
+		}
+	}
+	return NewWithIdentityControlPlane(st, authn, cfg, plane)
+}
+
+// NewWithIdentityControlPlane is the explicit dependency-injection seam used
+// by tests and alternate deployments. Production New constructs the HTTP
+// adapter from configuration.
+func NewWithIdentityControlPlane(
+	st store.Store,
+	authn auth.Authenticator,
+	cfg config.Config,
+	plane identityplane.ControlPlane,
+) http.Handler {
 	s := &Server{
 		store:    st,
 		cfg:      cfg,
 		signer:   signing.New(cfg.SigningKey, cfg.SigningDev),
 		resolver: resolve.New(st, resolve.SourcesFromConfig(cfg.ToolSourceURLs), nil),
+		identity: plane,
 	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(requestIDHeader)
 	r.Use(middleware.Recoverer)
 	// Per-request processing deadline: a handler that runs past this has its
 	// context cancelled and a 504 returned, so a slow store query or a wedged
@@ -83,6 +105,13 @@ func New(st store.Store, authn auth.Authenticator, cfg config.Config) http.Handl
 	}
 
 	return r
+}
+
+func requestIDHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", middleware.GetReqID(r.Context()))
+		next.ServeHTTP(w, r)
+	})
 }
 
 // spaHandler serves static files from dir, falling back to index.html for

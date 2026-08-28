@@ -16,6 +16,8 @@ describe("AgentGatewayShell", () => {
         initialSession={{
           authenticated: true,
           email: "samyak.rout@gmail.com",
+          tenant_id: "tesserix",
+          onboarding_required: false,
           admin: true,
         }}
       >

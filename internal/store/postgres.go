@@ -78,6 +78,29 @@ CREATE TABLE IF NOT EXISTS registry.artifact_revisions (
     PRIMARY KEY (kind, namespace, name, tag, revision)
 );
 CREATE INDEX IF NOT EXISTS idx_revisions_artifact ON registry.artifact_revisions (kind, namespace, name, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS registry.publish_idempotency (
+    actor_scope  text        NOT NULL,
+    key          text        NOT NULL,
+    request_hash char(64)    NOT NULL,
+    result       jsonb       NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    expires_at   timestamptz NOT NULL,
+    PRIMARY KEY (actor_scope, key)
+);
+CREATE INDEX IF NOT EXISTS idx_publish_idempotency_expiry
+    ON registry.publish_idempotency (expires_at);
+
+CREATE TABLE IF NOT EXISTS registry.publish_outbox (
+    id           uuid        PRIMARY KEY,
+    actor_scope  text        NOT NULL,
+    event_type   text        NOT NULL,
+    payload      jsonb       NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    published_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_publish_outbox_unpublished
+    ON registry.publish_outbox (created_at, id) WHERE published_at IS NULL;
 `
 
 // backfillRevisionsSQL seeds revision 1 from the current artifacts for any row
@@ -229,6 +252,110 @@ func vecLiteral(v []float32) string {
 }
 
 func (p *Postgres) Apply(ctx context.Context, obj v1alpha1.Object) (v1alpha1.Object, bool, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	result, created, err := p.applyTx(ctx, tx, obj)
+	if err != nil {
+		return v1alpha1.Object{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return v1alpha1.Object{}, false, fmt.Errorf("postgres: commit: %w", err)
+	}
+	return result, created, nil
+}
+
+func (p *Postgres) ApplyBatch(ctx context.Context, objs []v1alpha1.Object, opts BatchOptions) (BatchResult, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return BatchResult{}, fmt.Errorf("postgres: begin batch: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if opts.IdempotencyKey != "" {
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+			opts.IdempotencyScope, opts.IdempotencyKey,
+		); err != nil {
+			return BatchResult{}, fmt.Errorf("postgres: idempotency lock: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM registry.publish_idempotency
+			  WHERE actor_scope=$1 AND key=$2 AND expires_at <= now()`,
+			opts.IdempotencyScope, opts.IdempotencyKey,
+		); err != nil {
+			return BatchResult{}, fmt.Errorf("postgres: expire idempotency: %w", err)
+		}
+		var previousHash string
+		var previousJSON []byte
+		err := tx.QueryRow(ctx,
+			`SELECT request_hash, result FROM registry.publish_idempotency
+			  WHERE actor_scope=$1 AND key=$2`,
+			opts.IdempotencyScope, opts.IdempotencyKey,
+		).Scan(&previousHash, &previousJSON)
+		switch {
+		case err == nil:
+			if previousHash != opts.RequestHash {
+				return BatchResult{}, ErrIdempotencyConflict
+			}
+			var previous []ApplyResult
+			if err := json.Unmarshal(previousJSON, &previous); err != nil {
+				return BatchResult{}, fmt.Errorf("postgres: decode idempotency result: %w", err)
+			}
+			return BatchResult{Items: previous, Replayed: true}, nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return BatchResult{}, fmt.Errorf("postgres: read idempotency: %w", err)
+		}
+	}
+	results := make([]ApplyResult, 0, len(objs))
+	for _, obj := range objs {
+		applied, created, err := p.applyTx(ctx, tx, obj)
+		if err != nil {
+			return BatchResult{}, err
+		}
+		results = append(results, ApplyResult{Object: applied, Created: created})
+	}
+	resultJSON, err := json.Marshal(results)
+	if err != nil {
+		return BatchResult{}, fmt.Errorf("postgres: encode batch result: %w", err)
+	}
+	if opts.IdempotencyKey != "" {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO registry.publish_idempotency
+			 (actor_scope,key,request_hash,result,expires_at)
+			 VALUES ($1,$2,$3,$4,now()+interval '24 hours')`,
+			opts.IdempotencyScope, opts.IdempotencyKey, opts.RequestHash, resultJSON,
+		); err != nil {
+			return BatchResult{}, fmt.Errorf("postgres: save idempotency: %w", err)
+		}
+	}
+	evidence := make([]map[string]string, 0, len(results))
+	for _, result := range results {
+		evidence = append(evidence, map[string]string{
+			"kind": string(result.Object.Kind), "namespace": result.Object.Metadata.Namespace,
+			"name": result.Object.Metadata.Name, "tag": result.Object.Metadata.Tag,
+			"digest": result.Object.Digest(),
+		})
+	}
+	payload, err := json.Marshal(map[string]any{"artifacts": evidence})
+	if err != nil {
+		return BatchResult{}, fmt.Errorf("postgres: encode outbox: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO registry.publish_outbox (id,actor_scope,event_type,payload)
+		 VALUES ($1,$2,'artifact.batch_applied',$3)`,
+		uuid.NewString(), opts.IdempotencyScope, payload,
+	); err != nil {
+		return BatchResult{}, fmt.Errorf("postgres: save outbox: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return BatchResult{}, fmt.Errorf("postgres: commit batch: %w", err)
+	}
+	return BatchResult{Items: results}, nil
+}
+
+func (p *Postgres) applyTx(ctx context.Context, tx pgx.Tx, obj v1alpha1.Object) (v1alpha1.Object, bool, error) {
 	obj = obj.Normalized()
 	status := map[string]interface{}{"status": "active"}
 	statusJSON, err := json.Marshal(status)
@@ -236,14 +363,6 @@ func (p *Postgres) Apply(ctx context.Context, obj v1alpha1.Object) (v1alpha1.Obj
 		return v1alpha1.Object{}, false, fmt.Errorf("postgres: marshal status: %w", err)
 	}
 	uid := uuid.NewString()
-
-	// Everything runs in one transaction: auto-versioning, the immutability
-	// check, the upsert, and the append-only revision are atomic.
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return v1alpha1.Object{}, false, fmt.Errorf("postgres: begin: %w", err)
-	}
-	defer tx.Rollback(ctx)
 
 	// Namespace-scoped name uniqueness across all kinds. Serialize concurrent
 	// publishes targeting the same (namespace, name) with a transaction-scoped
@@ -415,10 +534,6 @@ RETURNING (xmax = 0) AS inserted, uid, created_at, updated_at`
 		); err != nil {
 			return v1alpha1.Object{}, false, fmt.Errorf("postgres: revision insert: %w", err)
 		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return v1alpha1.Object{}, false, fmt.Errorf("postgres: commit: %w", err)
 	}
 
 	obj.Metadata.UID = gotUID

@@ -1,15 +1,14 @@
 // Command agentic is the CLI for the Agentic Registry. It publishes, fetches,
 // and scaffolds artifacts against any registry endpoint over the /v0 API.
 //
-//	agentic login   --registry URL [--token T]   save endpoint + token
+//	agentic auth login --registry URL             sign in with OAuth 2.1
 //	agentic init    <kind> <name>                scaffold a manifest to stdout
 //	agentic apply   -f <file.yaml>               publish a multi-doc YAML bundle
 //	agentic push    <file.yaml>                  publish a single resource
 //	agentic list    <plural> [--selector S]      list a collection
 //	agentic pull    <plural> <name> [--tag T]    fetch one artifact as JSON
 //
-// The CLI holds no secrets beyond the token the user explicitly saves to
-// ~/.agentic/config.json (file mode 0600).
+// OAuth refresh material is kept in the operating-system credential store.
 package main
 
 import (
@@ -23,13 +22,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/tesserix/agentic-registry/adapters/agentgateway"
 	"github.com/tesserix/agentic-registry/adapters/kagent"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
+	"gopkg.in/yaml.v3"
 )
 
 // Version is set at build time via -ldflags (GoReleaser).
@@ -42,12 +42,17 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "auth":
+		err = cmdAuth(os.Args[2:])
 	case "login":
-		err = cmdLogin(os.Args[2:])
+		fmt.Fprintln(os.Stderr, "warning: 'agentic login' is deprecated; use 'agentic auth login'")
+		err = cmdAuthLogin(os.Args[2:])
 	case "init":
 		err = cmdInit(os.Args[2:])
 	case "apply":
 		err = cmdApply(os.Args[2:])
+	case "validate":
+		err = cmdValidate(os.Args[2:])
 	case "push":
 		err = cmdPush(os.Args[2:])
 	case "list":
@@ -91,9 +96,13 @@ func usage() {
 	fmt.Print(`agentic — Agentic Registry CLI
 
 Usage:
-  agentic login --registry URL [--token TOKEN]
+  agentic auth login --registry URL     sign in with device authorization or PKCE
+  agentic auth status                   show sign-in state without printing tokens
+  agentic auth logout                   remove locally stored OAuth credentials
   agentic init <kind> <name>            scaffold a manifest (Skill|Tool|MCPServer|Prompt|Workflow|Blueprint|Agent)
   agentic apply -f <file.yaml>          publish a multi-doc YAML bundle
+  agentic apply -f <file.yaml> --dry-run  validate remotely without writing
+  agentic validate -f <file.yaml>       validate a bundle locally
   agentic push <file.yaml>              publish a single resource
   agentic list <plural> [--selector S]  list a collection (table; -o json for raw)
   agentic pull <plural> <name> [--tag T]   fetch one artifact (omit --tag for latest)
@@ -111,55 +120,11 @@ Output: add -o json (or --json) to list / search / versions / history for raw JS
 
 Environment:
   AGENTIC_REGISTRY   registry base URL (overrides saved config)
-  AGENTIC_TOKEN      bearer token (overrides saved config)
+  AGENTIC_TOKEN      ephemeral bearer token override (never persisted)
+  AGENTIC_CLIENT_ID / AGENTIC_CLIENT_SECRET / AGENTIC_TOKEN_URL
+                    CI client-credentials flow (environment only)
   AGENTIC_INSECURE   skip TLS verification (local self-signed gateways only)
 `)
-}
-
-// ---- config ----------------------------------------------------------------
-
-type config struct {
-	Registry string `json:"registry"`
-	Token    string `json:"token,omitempty"`
-}
-
-func configPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agentic", "config.json")
-}
-
-func loadConfig() config {
-	c := config{Registry: "http://localhost:8080"}
-	if b, err := os.ReadFile(configPath()); err == nil {
-		_ = json.Unmarshal(b, &c)
-	}
-	if v := os.Getenv("AGENTIC_REGISTRY"); v != "" {
-		c.Registry = v
-	}
-	if v := os.Getenv("AGENTIC_TOKEN"); v != "" {
-		c.Token = v
-	}
-	return c
-}
-
-func cmdLogin(args []string) error {
-	fs := flags(args)
-	c := loadConfig()
-	if v := fs["registry"]; v != "" {
-		c.Registry = v
-	}
-	if v := fs["token"]; v != "" {
-		c.Token = v
-	}
-	if err := os.MkdirAll(filepath.Dir(configPath()), 0o700); err != nil {
-		return err
-	}
-	b, _ := json.MarshalIndent(c, "", "  ")
-	if err := os.WriteFile(configPath(), b, 0o600); err != nil {
-		return err
-	}
-	fmt.Printf("saved %s (registry=%s)\n", configPath(), c.Registry)
-	return nil
 }
 
 // ---- init -------------------------------------------------------------------
@@ -197,12 +162,65 @@ func cmdApply(args []string) error {
 		return err
 	}
 	c := loadConfig()
-	resp, err := request(c, http.MethodPost, "/v0/apply", "application/yaml", body)
+	path := "/v0/apply"
+	if _, ok := fs["dry-run"]; ok {
+		path += "?dryRun=true"
+	}
+	idempotencyKey := fs["idempotency-key"]
+	if idempotencyKey == "" {
+		idempotencyKey = uuid.NewString()
+	}
+	resp, err := requestWithHeaders(c, http.MethodPost, path, "application/yaml", body, map[string]string{
+		"Idempotency-Key": idempotencyKey,
+	})
 	if err != nil {
 		return err
 	}
 	fmt.Println(resp)
 	return nil
+}
+
+func cmdValidate(args []string) error {
+	file := flags(args)["f"]
+	if file == "" {
+		return fmt.Errorf("usage: agentic validate -f <file.yaml>")
+	}
+	body, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	count, err := validateBundle(body)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("valid: %d resource(s)\n", count)
+	return nil
+}
+
+func validateBundle(body []byte) (int, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(body))
+	count := 0
+	for {
+		var obj v1alpha1.Object
+		err := decoder.Decode(&obj)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("document %d: invalid YAML: %w", count+1, err)
+		}
+		if obj.Kind == "" && obj.Metadata.Name == "" {
+			continue
+		}
+		count++
+		if err := obj.Validate(); err != nil {
+			return 0, fmt.Errorf("document %d: %w", count, err)
+		}
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("no resources found in body")
+	}
+	return count, nil
 }
 
 func cmdPush(args []string) error {
@@ -499,7 +517,11 @@ func cmdExport(args []string) error {
 }
 
 func request(c config, method, path, contentType string, body []byte) (string, error) {
-	out, err := requestRaw(c, method, path, contentType, body)
+	return requestWithHeaders(c, method, path, contentType, body, nil)
+}
+
+func requestWithHeaders(c config, method, path, contentType string, body []byte, headers map[string]string) (string, error) {
+	out, err := requestRawWithHeaders(c, method, path, contentType, body, headers)
 	if err != nil {
 		return "", err
 	}
@@ -507,6 +529,10 @@ func request(c config, method, path, contentType string, body []byte) (string, e
 }
 
 func requestRaw(c config, method, path, contentType string, body []byte) ([]byte, error) {
+	return requestRawWithHeaders(c, method, path, contentType, body, nil)
+}
+
+func requestRawWithHeaders(c config, method, path, contentType string, body []byte, headers map[string]string) ([]byte, error) {
 	req, err := http.NewRequest(method, strings.TrimRight(c.Registry, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -515,8 +541,15 @@ func requestRaw(c config, method, path, contentType string, body []byte) ([]byte
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+	token, err := resolveAccessToken(c)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	// AGENTIC_INSECURE skips TLS verification — for local sandboxes behind a

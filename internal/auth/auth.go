@@ -31,20 +31,24 @@ const (
 // Identity is the authenticated caller. Anonymous callers have Authenticated
 // false and may still read public artifacts.
 type Identity struct {
-	Subject       string
-	Email         string
-	TenantID      string
-	Groups        []string
-	Scopes        []string // OAuth 2.1 scopes, e.g. registry:read registry:write
-	Authenticated bool
+	Subject           string
+	Email             string
+	TenantID          string
+	Groups            []string
+	Scopes            []string // OAuth 2.1 scopes, e.g. registry:read registry:write
+	AllowedNamespaces []string // signed Zitadel metadata restriction for publisher credentials
+	AllowedKinds      []string // signed Zitadel metadata restriction for publisher credentials
+	Authenticated     bool
 }
 
 // Scope constants (OAuth 2.1 Resource Server model). A machine-to-machine
 // token from a tool's client-credentials grant carries these.
 const (
-	ScopeRead  = "registry:read"
-	ScopeWrite = "registry:write"
-	ScopeAdmin = "registry:admin"
+	ScopeRead    = "registry:read"
+	ScopePublish = "registry:publish"
+	ScopeDelete  = "registry:delete"
+	ScopeWrite   = "registry:write"
+	ScopeAdmin   = "registry:admin"
 
 	// DeployKeyHeader carries opaque machine credentials without exposing them
 	// to mesh JWT authentication on the Authorization header.
@@ -69,6 +73,18 @@ func (id Identity) scopeAllows(required string) bool {
 		return true
 	}
 	return id.hasScope(required)
+}
+
+func (id Identity) scopeAllowsAny(required ...string) bool {
+	if len(id.Scopes) == 0 {
+		return true
+	}
+	for _, scope := range required {
+		if id.hasScope(scope) {
+			return true
+		}
+	}
+	return false
 }
 
 type ctxKey struct{}
@@ -312,7 +328,7 @@ func humanReadGroups(groups []string) []string {
 func humanReadScopes(scopes []string) []string {
 	out := make([]string, 0, len(scopes))
 	for _, scope := range scopes {
-		if scope == ScopeWrite || scope == ScopeAdmin {
+		if scope == ScopePublish || scope == ScopeDelete || scope == ScopeWrite || scope == ScopeAdmin {
 			continue
 		}
 		out = append(out, scope)
@@ -410,10 +426,22 @@ func CanRead(id Identity, o v1alpha1.Object) bool {
 // CanWrite requires the write scope (for scoped tokens) plus write/admin on the
 // artifact's scope, and enforces tenant ownership at publish time.
 func CanWrite(id Identity, o v1alpha1.Object) bool {
+	return canMutate(id, o, ScopeWrite)
+}
+
+func CanPublish(id Identity, o v1alpha1.Object) bool {
+	return canMutate(id, o, ScopePublish, ScopeWrite) && credentialActionAllowed(id, o, "registry.publisher")
+}
+
+func CanDelete(id Identity, o v1alpha1.Object) bool {
+	return canMutate(id, o, ScopeDelete, ScopeWrite) && credentialActionAllowed(id, o, "registry.deleter")
+}
+
+func canMutate(id Identity, o v1alpha1.Object, scopes ...string) bool {
 	if !id.Authenticated {
 		return false
 	}
-	if !id.scopeAllows(ScopeWrite) {
+	if !id.scopeAllowsAny(scopes...) {
 		return false
 	}
 	return RoleFor(id, o) >= RoleWrite
@@ -452,6 +480,14 @@ func RoleFor(id Identity, o v1alpha1.Object) Role {
 			best = max(best, RoleWrite)
 		case tenant + ":reader":
 			best = max(best, RoleRead)
+		case "registry.reader":
+			if id.TenantID == tenant {
+				best = max(best, RoleRead)
+			}
+		case "registry.publisher", "registry.deleter":
+			if id.TenantID == tenant {
+				best = max(best, RoleWrite)
+			}
 		}
 	}
 	// A member of the owning tenant always has at least read on its artifacts.
@@ -459,6 +495,26 @@ func RoleFor(id Identity, o v1alpha1.Object) Role {
 		best = RoleRead
 	}
 	return best
+}
+
+func credentialActionAllowed(id Identity, o v1alpha1.Object, action string) bool {
+	credential := contains(id.Groups, "registry.reader") ||
+		contains(id.Groups, "registry.publisher") || contains(id.Groups, "registry.deleter")
+	if !credential {
+		return true
+	}
+	if !contains(id.Groups, action) || len(id.AllowedNamespaces) == 0 || len(id.AllowedKinds) == 0 {
+		return false
+	}
+	if !contains(id.AllowedNamespaces, o.Metadata.Namespace) {
+		return false
+	}
+	for _, kind := range id.AllowedKinds {
+		if strings.EqualFold(kind, string(o.Kind)) {
+			return true
+		}
+	}
+	return false
 }
 
 func max(a, b Role) Role {

@@ -11,6 +11,8 @@ import { RegistrySessionProvider } from "./lib/session";
 import { isAgentGatewayHost } from "./lib/agentGateway";
 import AgentGatewayShell from "./components/AgentGatewayShell";
 import AgentGatewayHome from "./pages/AgentGatewayHome";
+import APICredentials from "./pages/APICredentials";
+import Onboarding from "./pages/Onboarding";
 
 function AgentGatewayApp() {
   return (
@@ -55,6 +57,8 @@ export default function App() {
           <Route path="/" element={<Navigate to="/skills" replace />} />
           <Route path="/:plural" element={<Catalog />} />
           <Route path="/:plural/:name" element={<ArtifactDetail />} />
+          <Route path="/settings/api-credentials" element={<APICredentials />} />
+          <Route path="/onboarding" element={<Onboarding />} />
           <Route path="*" element={<Navigate to="/skills" replace />} />
         </Routes>
       </Shell>
