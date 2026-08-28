@@ -5,12 +5,12 @@ import { AdminOnly, RegistrySessionProvider } from "./session";
 describe("AdminOnly", () => {
   it("renders registry mutation controls only for server-authorized admins", () => {
     const admin = renderToStaticMarkup(
-      <RegistrySessionProvider initialSession={{ authenticated: true, email: "samyak.rout@gmail.com", admin: true }}>
+      <RegistrySessionProvider initialSession={{ authenticated: true, email: "samyak.rout@gmail.com", tenant_id: "tesserix", onboarding_required: false, admin: true }}>
         <AdminOnly><button>Publish</button></AdminOnly>
       </RegistrySessionProvider>,
     );
     const reader = renderToStaticMarkup(
-      <RegistrySessionProvider initialSession={{ authenticated: true, email: "reader@example.com", admin: false }}>
+      <RegistrySessionProvider initialSession={{ authenticated: true, email: "reader@example.com", tenant_id: "tesserix", onboarding_required: false, admin: false }}>
         <AdminOnly><button>Publish</button></AdminOnly>
       </RegistrySessionProvider>,
     );

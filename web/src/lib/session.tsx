@@ -1,7 +1,13 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { api, type Session } from "./api";
 
-const anonymousSession: Session = { authenticated: false, email: "", admin: false };
+const anonymousSession: Session = {
+  authenticated: false,
+  email: "",
+  tenant_id: "",
+  onboarding_required: false,
+  admin: false,
+};
 const RegistrySessionContext = createContext<Session>(anonymousSession);
 
 export function RegistrySessionProvider({

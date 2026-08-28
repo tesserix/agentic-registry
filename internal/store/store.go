@@ -44,6 +44,8 @@ var ErrNameConflict = errors.New("name already in use by another kind in this na
 // with errors.Is(err, ErrTenantConflict).
 var ErrTenantConflict = errors.New("artifact is owned by a different tenant")
 
+var ErrIdempotencyConflict = errors.New("idempotency key was already used for a different request")
+
 // NameConflictError describes a rejected name claim with enough context for a
 // human-meaningful API message: which name/namespace collided, the kind the
 // publisher tried to use, and the kind + ARN that already owns the name.
@@ -129,6 +131,22 @@ type Revision struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+type ApplyResult struct {
+	Object  v1alpha1.Object
+	Created bool
+}
+
+type BatchOptions struct {
+	IdempotencyScope string
+	IdempotencyKey   string
+	RequestHash      string
+}
+
+type BatchResult struct {
+	Items    []ApplyResult
+	Replayed bool
+}
+
 // Store is the persistence contract.
 type Store interface {
 	// Apply upserts an artifact by (kind, namespace, name, tag). It stamps
@@ -136,6 +154,9 @@ type Store interface {
 	// whether a new (name,tag) row was inserted. Re-applying identical content
 	// is a no-op (same contentHash) but refreshes updatedAt.
 	Apply(ctx context.Context, obj v1alpha1.Object) (result v1alpha1.Object, created bool, err error)
+
+	// ApplyBatch publishes every object in one transaction or publishes none.
+	ApplyBatch(ctx context.Context, objs []v1alpha1.Object, opts BatchOptions) (BatchResult, error)
 
 	// Get returns one artifact. tag "" or "latest" resolves the newest tag.
 	Get(ctx context.Context, kind v1alpha1.Kind, namespace, name, tag string) (v1alpha1.Object, error)

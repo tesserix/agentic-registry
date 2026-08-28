@@ -55,3 +55,50 @@ describe("registry session API", () => {
     });
   });
 });
+
+describe("API credential management", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("creates a short-lived credential with an idempotency key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "cred-1",
+          name: "ci",
+          client_id: "client-1",
+          client_secret: "shown-once",
+          status: "active",
+          scopes: ["registry:read", "registry:publish"],
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("crypto", { randomUUID: () => "idem-42" });
+
+    const result = await api.createCredential({
+      name: "ci",
+      scopes: ["registry:read", "registry:publish"],
+      lifetime_days: 30,
+      namespaces: ["agents-team"],
+      kinds: ["Agent", "Tool"],
+    });
+
+    expect(result.client_secret).toBe("shown-once");
+    expect(fetchMock).toHaveBeenCalledWith("/v0/settings/api-credentials", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "Idempotency-Key": "idem-42",
+      },
+      body: JSON.stringify({
+        name: "ci",
+        scopes: ["registry:read", "registry:publish"],
+        lifetime_days: 30,
+        namespaces: ["agents-team"],
+        kinds: ["Agent", "Tool"],
+      }),
+    });
+  });
+});

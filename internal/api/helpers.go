@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/tesserix/agentic-registry/internal/auth"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
@@ -17,8 +18,14 @@ func writeJSON(w http.ResponseWriter, status int, body interface{}) {
 // writeErr emits a structured error envelope so clients (and the dashboard) can
 // render a meaningful state rather than guessing from a bare status code.
 func writeErr(w http.ResponseWriter, status int, msg string) {
+	writeCodedErr(w, status, publicErrorCode(status), msg)
+}
+
+func writeCodedErr(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]interface{}{
-		"error": map[string]interface{}{"code": status, "message": msg},
+		"code":       code,
+		"message":    msg,
+		"request_id": w.Header().Get("X-Request-ID"),
 	})
 }
 
@@ -28,15 +35,25 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 func writeValidationErr(w http.ResponseWriter, err error) {
 	if se, ok := err.(*v1alpha1.SpecError); ok {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"error": map[string]interface{}{
-				"code":    http.StatusBadRequest,
-				"message": se.Error(),
-				"fields":  se.Fields(),
-			},
+			"code":       "validation_failed",
+			"message":    se.Error(),
+			"request_id": w.Header().Get("X-Request-ID"),
+			"fields":     se.Fields(),
 		})
 		return
 	}
 	writeErr(w, http.StatusBadRequest, err.Error())
+}
+
+func publicErrorCode(status int) string {
+	if status == http.StatusUnprocessableEntity {
+		return "validation_failed"
+	}
+	code := strings.ToLower(strings.ReplaceAll(http.StatusText(status), " ", "_"))
+	if code == "" {
+		return "request_failed"
+	}
+	return code
 }
 
 // readPredicate builds the visibility/RBAC pre-filter for the request's caller.

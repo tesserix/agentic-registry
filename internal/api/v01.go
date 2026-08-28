@@ -221,7 +221,7 @@ func (s *Server) mcpSetStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "server version not found")
 		return
 	}
-	if err == nil && !auth.CanWrite(identity(r), o) {
+	if err == nil && !auth.CanPublish(identity(r), o) {
 		writeErr(w, http.StatusForbidden, "insufficient permission")
 		return
 	}

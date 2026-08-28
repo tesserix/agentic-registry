@@ -68,9 +68,22 @@ func (s *Server) resolveAgentRefs(ctx context.Context, id auth.Identity, agent v
 				}
 				out = append(out, s.withIdentity(obj))
 			case map[string]interface{}:
-				// Inline definition — wrap it as an Object so consumers see a
-				// uniform shape, but don't fetch anything.
-				out = append(out, v1alpha1.Object{Kind: rf.Kind, Spec: v})
+				ref, _ := v["ref"].(string)
+				if ref == "" {
+					// Inline definition — wrap it as an Object so consumers see a
+					// uniform shape, but don't fetch anything.
+					out = append(out, v1alpha1.Object{Kind: rf.Kind, Spec: v})
+					continue
+				}
+				version, _ := v["version"].(string)
+				obj, err := s.store.Get(ctx, rf.Kind, ns, ref, version)
+				if err != nil || !auth.CanRead(id, obj) {
+					unresolved = append(unresolved, UnresolvedRef{
+						Kind: string(rf.Kind), Ref: ref, Reason: "not found or not readable",
+					})
+					continue
+				}
+				out = append(out, s.withIdentity(obj))
 			}
 		}
 		if len(out) > 0 {

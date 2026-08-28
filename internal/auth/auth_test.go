@@ -7,9 +7,59 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/tesserix/agentic-registry/internal/config"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
+
+func TestTenantClaimIsConfigurableForZitadel(t *testing.T) {
+	claims := jwt.MapClaims{
+		"tenant":                 "legacy",
+		"urn:zitadel:iam:org:id": "zitadel-org-42",
+	}
+	if got := tenantFromClaims(claims, "urn:zitadel:iam:org:id"); got != "zitadel-org-42" {
+		t.Fatalf("tenantFromClaims() = %q", got)
+	}
+	if got := tenantFromClaims(claims, ""); got != "legacy" {
+		t.Fatalf("legacy tenant fallback = %q", got)
+	}
+}
+
+func TestTenantFallsBackToTheUniqueRegistryRoleOrganization(t *testing.T) {
+	claims := jwt.MapClaims{
+		"urn:zitadel:iam:org:project:386930054896026901:roles": map[string]interface{}{
+			"registry.reader":    map[string]interface{}{"customer-org": "acme.example"},
+			"registry.publisher": map[string]interface{}{"customer-org": "acme.example"},
+		},
+	}
+	got := tenantFromRoleClaim(claims["urn:zitadel:iam:org:project:386930054896026901:roles"])
+	if got != "customer-org" {
+		t.Fatalf("tenant from role claim = %q, want customer-org", got)
+	}
+	claims["urn:zitadel:iam:org:project:386930054896026901:roles"] = map[string]interface{}{
+		"registry.reader": map[string]interface{}{"org-a": "a.example", "org-b": "b.example"},
+	}
+	if got := tenantFromRoleClaim(claims["urn:zitadel:iam:org:project:386930054896026901:roles"]); got != "" {
+		t.Fatalf("ambiguous role organizations selected %q", got)
+	}
+}
+
+func TestSignedMetadataSelectsOneOfSeveralGrantedOrganizations(t *testing.T) {
+	roles := map[string]interface{}{
+		"registry.reader": map[string]interface{}{"org-a": "a.example", "org-b": "b.example"},
+	}
+	metadata := map[string]interface{}{
+		"registry_tenant": "b3JnLWI", // raw URL base64 for org-b
+	}
+	if got := tenantFromRegistryMetadata(metadata, roles); got != "org-b" {
+		t.Fatalf("selected tenant = %q, want org-b", got)
+	}
+	metadata["registry_tenant"] = "b3JnLWM"
+	if got := tenantFromRegistryMetadata(metadata, roles); got != "" {
+		t.Fatalf("metadata selected ungranted tenant %q", got)
+	}
+}
 
 func deployKeyDigest(key string) string {
 	digest := sha256.Sum256([]byte(key))
@@ -101,6 +151,81 @@ func TestUnscopedGroupTokenStillWorks(t *testing.T) {
 	groupAdmin := Identity{Authenticated: true, TenantID: "acme", Groups: []string{"registry:admin"}}
 	if !CanWrite(groupAdmin, o) {
 		t.Fatal("unscoped group admin must retain write (backward compat)")
+	}
+}
+
+func TestPublishAndDeleteScopesAreLeastPrivilege(t *testing.T) {
+	o := obj(v1alpha1.VisibilityPrivate, "acme")
+	publisher := Identity{
+		Authenticated: true, TenantID: "acme", Groups: []string{"acme:writer"},
+		Scopes: []string{ScopeRead, ScopePublish},
+	}
+	if !CanPublish(publisher, o) || CanDelete(publisher, o) {
+		t.Fatal("registry:publish must publish without gaining delete")
+	}
+	deleter := Identity{
+		Authenticated: true, TenantID: "acme", Groups: []string{"acme:writer"},
+		Scopes: []string{ScopeRead, ScopeDelete},
+	}
+	if CanPublish(deleter, o) || !CanDelete(deleter, o) {
+		t.Fatal("registry:delete must delete without gaining publish")
+	}
+	legacy := Identity{
+		Authenticated: true, TenantID: "acme", Groups: []string{"acme:writer"},
+		Scopes: []string{ScopeRead, ScopeWrite},
+	}
+	if !CanPublish(legacy, o) || !CanDelete(legacy, o) {
+		t.Fatal("registry:write must remain a temporary alias for publish and delete")
+	}
+}
+
+func TestPublisherMetadataRestrictsNamespaceKindAndDelete(t *testing.T) {
+	publisher := Identity{
+		Authenticated:     true,
+		TenantID:          "tenant-42",
+		Groups:            []string{"registry.publisher"},
+		Scopes:            []string{ScopeRead, ScopePublish, ScopeDelete},
+		AllowedNamespaces: []string{"agents-team"},
+		AllowedKinds:      []string{"Agent", "Tool"},
+	}
+	allowed := v1alpha1.Object{
+		Kind: v1alpha1.KindAgent,
+		Metadata: v1alpha1.ObjectMeta{
+			Name: "support", Namespace: "agents-team", TenantID: "tenant-42", Visibility: v1alpha1.VisibilityPrivate,
+		},
+	}
+	if !CanPublish(publisher, allowed) {
+		t.Fatal("publisher must publish an allowed kind in an allowed namespace")
+	}
+	if CanDelete(publisher, allowed) {
+		t.Fatal("publisher without registry.deleter role must not delete")
+	}
+	wrongNamespace := allowed
+	wrongNamespace.Metadata.Namespace = "finance"
+	if CanPublish(publisher, wrongNamespace) {
+		t.Fatal("publisher escaped namespace restriction")
+	}
+	wrongKind := allowed
+	wrongKind.Kind = v1alpha1.KindPrompt
+	if CanPublish(publisher, wrongKind) {
+		t.Fatal("publisher escaped kind restriction")
+	}
+	publisher.Groups = append(publisher.Groups, "registry.deleter")
+	if !CanDelete(publisher, allowed) {
+		t.Fatal("explicit deleter role must permit deletion within restrictions")
+	}
+}
+
+func TestZitadelMetadataClaimsDecodeRegistryRestrictions(t *testing.T) {
+	claims := jwt.MapClaims{
+		"urn:zitadel:iam:user:metadata": map[string]any{
+			"registry_namespaces": "WyJhZ2VudHMtdGVhbSJd",
+			"registry_kinds":      "WyJBZ2VudCIsIlRvb2wiXQ==",
+		},
+	}
+	namespaces, kinds := registryRestrictions(claims)
+	if !reflect.DeepEqual(namespaces, []string{"agents-team"}) || !reflect.DeepEqual(kinds, []string{"Agent", "Tool"}) {
+		t.Fatalf("namespaces=%#v kinds=%#v", namespaces, kinds)
 	}
 }
 

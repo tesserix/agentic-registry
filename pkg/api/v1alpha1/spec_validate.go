@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -157,12 +158,31 @@ func decode(spec map[string]interface{}, v interface{}) error {
 // ---- Agent ----------------------------------------------------------------
 
 type agentView struct {
-	Model        *modelView `json:"model"`
-	SystemPrompt *string    `json:"systemPrompt"`
-	Skills       []ref      `json:"skills"`
-	Tools        []ref      `json:"tools"`
-	MCPServers   []ref      `json:"mcpServers"`
-	Prompts      []ref      `json:"prompts"`
+	DefinitionVersion string            `json:"definitionVersion"`
+	Framework         string            `json:"framework"`
+	Runtime           *agentRuntimeView `json:"runtime"`
+	Model             *modelView        `json:"model"`
+	SystemPrompt      *string           `json:"systemPrompt"`
+	Skills            []ref             `json:"skills"`
+	Tools             []ref             `json:"tools"`
+	MCPServers        []ref             `json:"mcpServers"`
+	Prompts           []ref             `json:"prompts"`
+}
+
+type agentRuntimeView struct {
+	Type       string                `json:"type"`
+	Protocol   string                `json:"protocol"`
+	Image      string                `json:"image"`
+	URL        string                `json:"url"`
+	Port       *int                  `json:"port"`
+	Path       string                `json:"path"`
+	HealthPath string                `json:"healthPath"`
+	Auth       *agentRuntimeAuthView `json:"auth"`
+}
+
+type agentRuntimeAuthView struct {
+	Type          string `json:"type"`
+	CredentialRef string `json:"credentialRef"`
 }
 
 type modelView struct {
@@ -205,6 +225,26 @@ func validateAgentSpec(spec map[string]interface{}) []FieldError {
 			"model", "systemPrompt", "skills", "tools", "mcpServers", "prompts")
 	}
 	var errs []FieldError
+	if v.DefinitionVersion != "" && v.DefinitionVersion != "v1" {
+		errs = append(errs, FieldError{"spec.definitionVersion", "must be v1"})
+	}
+	if v.DefinitionVersion == "v1" {
+		if strings.TrimSpace(v.Framework) == "" {
+			errs = append(errs, FieldError{"spec.framework", "required for a portable agent"})
+		}
+		if v.Runtime == nil {
+			errs = append(errs, FieldError{"spec.runtime", "required for a portable agent"})
+		} else {
+			errs = append(errs, validatePortableRuntime(*v.Runtime)...)
+			if runtime, ok := spec["runtime"].(map[string]interface{}); ok {
+				errs = append(errs, validatePortableAuthFields(runtime)...)
+			}
+		}
+		errs = append(errs, validatePortableRefs("skills", v.Skills)...)
+		errs = append(errs, validatePortableRefs("tools", v.Tools)...)
+		errs = append(errs, validatePortableRefs("mcpServers", v.MCPServers)...)
+		errs = append(errs, validatePortableRefs("prompts", v.Prompts)...)
+	}
 	if v.Model != nil {
 		if strings.TrimSpace(v.Model.Provider) == "" {
 			errs = append(errs, FieldError{"spec.model.provider", "required when model is set"})
@@ -222,6 +262,110 @@ func validateAgentSpec(spec map[string]interface{}) []FieldError {
 	for i, s := range v.Skills {
 		if s.Name == "" && s.Inline == nil {
 			errs = append(errs, FieldError{fmt.Sprintf("spec.skills[%d]", i), "must be a name or an object with name/id"})
+		}
+	}
+	return errs
+}
+
+var immutableOCIImage = regexp.MustCompile(`^[^[:space:]@]+@sha256:[a-fA-F0-9]{64}$`)
+
+func validatePortableRuntime(runtime agentRuntimeView) []FieldError {
+	var errs []FieldError
+	if runtime.Protocol != "a2a" && runtime.Protocol != "http" {
+		errs = append(errs, FieldError{"spec.runtime.protocol", "must be a2a or http"})
+	}
+	if runtime.Port != nil && (*runtime.Port < 1 || *runtime.Port > 65535) {
+		errs = append(errs, FieldError{"spec.runtime.port", "must be between 1 and 65535"})
+	}
+	if runtime.Path != "" && !safeRuntimePath(runtime.Path) {
+		errs = append(errs, FieldError{"spec.runtime.path", "must be an absolute path without traversal"})
+	}
+	if runtime.HealthPath != "" && !safeRuntimePath(runtime.HealthPath) {
+		errs = append(errs, FieldError{"spec.runtime.healthPath", "must be an absolute path without traversal"})
+	}
+	switch runtime.Type {
+	case "container":
+		if !immutableOCIImage.MatchString(runtime.Image) {
+			errs = append(errs, FieldError{
+				"spec.runtime.image",
+				"container runtime image must be pinned by sha256 digest",
+			})
+		}
+		if runtime.URL != "" {
+			errs = append(errs, FieldError{"spec.runtime.url", "must be omitted for a container runtime"})
+		}
+		if runtime.Auth != nil {
+			errs = append(errs, FieldError{"spec.runtime.auth", "must be omitted for a container runtime"})
+		}
+	case "remote":
+		parsed, err := url.Parse(runtime.URL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			errs = append(errs, FieldError{"spec.runtime.url", "remote runtime must use an absolute HTTPS URL without user info"})
+		}
+		if runtime.Image != "" {
+			errs = append(errs, FieldError{"spec.runtime.image", "must be omitted for a remote runtime"})
+		}
+		if runtime.Auth == nil {
+			errs = append(errs, FieldError{"spec.runtime.auth", "authenticated remote runtimes require bearer credentials"})
+		} else {
+			if runtime.Auth.Type != "bearer" {
+				errs = append(errs, FieldError{"spec.runtime.auth.type", "must be bearer"})
+			}
+			if strings.TrimSpace(runtime.Auth.CredentialRef) == "" {
+				errs = append(errs, FieldError{"spec.runtime.auth.credentialRef", "must reference server-managed credential material"})
+			}
+		}
+	default:
+		errs = append(errs, FieldError{"spec.runtime.type", "must be container or remote"})
+	}
+	return errs
+}
+
+func safeRuntimePath(value string) bool {
+	if !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") {
+		return false
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePortableAuthFields(runtime map[string]interface{}) []FieldError {
+	auth, ok := runtime["auth"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	allowed := map[string]bool{"type": true, "credentialRef": true}
+	for key := range auth {
+		if !allowed[key] {
+			return []FieldError{{"spec.runtime.auth." + key, "credential material and unknown fields are not allowed"}}
+		}
+	}
+	return nil
+}
+
+func validatePortableRefs(field string, refs []ref) []FieldError {
+	var errs []FieldError
+	for i, item := range refs {
+		path := fmt.Sprintf("spec.%s[%d]", field, i)
+		if item.Inline == nil {
+			errs = append(errs, FieldError{path, "registry dependency must use an object ref with an explicit version"})
+			continue
+		}
+		refName, hasRef := item.Inline["ref"]
+		if !hasRef {
+			continue
+		}
+		name, ok := refName.(string)
+		if !ok || strings.TrimSpace(name) == "" {
+			errs = append(errs, FieldError{path + ".ref", "must be a non-empty artifact name"})
+		}
+		version, ok := item.Inline["version"].(string)
+		if !ok || strings.TrimSpace(version) == "" || version == DefaultTag {
+			errs = append(errs, FieldError{path + ".version", "must pin an immutable version"})
 		}
 	}
 	return errs

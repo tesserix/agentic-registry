@@ -45,3 +45,16 @@ func TestLoadParsesHumanAdminPolicy(t *testing.T) {
 		t.Fatalf("unexpected admin role: %q", cfg.AdminRole)
 	}
 }
+
+func TestLoadConfiguresZitadelTenantClaimAndIdentityPlane(t *testing.T) {
+	t.Setenv("AUTH_TENANT_CLAIM", "urn:zitadel:iam:org:id")
+	t.Setenv("IDENTITY_CONTROL_PLANE_URL", "https://onboard.tesserix.app")
+
+	cfg := Load()
+	if cfg.TenantClaim != "urn:zitadel:iam:org:id" {
+		t.Fatalf("unexpected tenant claim: %q", cfg.TenantClaim)
+	}
+	if cfg.IdentityControlPlaneURL != "https://onboard.tesserix.app" {
+		t.Fatalf("unexpected identity control plane URL: %q", cfg.IdentityControlPlaneURL)
+	}
+}

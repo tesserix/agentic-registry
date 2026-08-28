@@ -33,7 +33,13 @@ type Config struct {
 	AuthIssuer   string // expected "iss" claim
 	AuthAudience string // expected "aud" claim (optional)
 	GroupsClaim  string // JWT claim carrying group/role membership
+	TenantClaim  string // JWT claim carrying the Zitadel organization/tenant ID
+	CLIClientID  string // public OAuth client used by agentic auth login
 	TrustedProxy bool   // trust X-Forwarded-* identity headers
+	// IdentityControlPlaneURL is the onboarding-service origin. Registry
+	// delegates tenant and OAuth client lifecycle to it and never stores client
+	// secrets or credential verifiers.
+	IdentityControlPlaneURL string
 	// AdminEmails and AdminRole form a two-factor human administration policy:
 	// a human must have both an exact allowlisted email and the configured IdP
 	// project role. Machine identities and tenant deploy keys remain governed by
@@ -106,8 +112,13 @@ func Load() Config {
 		AuthIssuer:   env("AUTH_ISSUER", ""),
 		AuthAudience: env("AUTH_AUDIENCE", ""),
 		GroupsClaim:  env("AUTH_GROUPS_CLAIM", "groups"),
+		TenantClaim:  env("AUTH_TENANT_CLAIM", "urn:zitadel:iam:org:id"),
+		CLIClientID:  strings.TrimSpace(env("AUTH_CLI_CLIENT_ID", "")),
 		TrustedProxy: env("AUTH_TRUSTED_PROXY", "false") == "true",
-		AdminRole:    strings.TrimSpace(env("AUTH_ADMIN_ROLE", "")),
+		IdentityControlPlaneURL: strings.TrimRight(
+			strings.TrimSpace(env("IDENTITY_CONTROL_PLANE_URL", "")), "/",
+		),
+		AdminRole: strings.TrimSpace(env("AUTH_ADMIN_ROLE", "")),
 		// Default "admin" preserves current behavior (see field doc); set to
 		// "read" in chart values to downgrade anonymous callers to read-only.
 		AnonymousRole:     env("AUTH_ANONYMOUS_ROLE", "admin"),

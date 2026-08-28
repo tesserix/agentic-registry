@@ -63,7 +63,7 @@ func (s *Server) v0PutMCPServerStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if !auth.CanWrite(identity(r), obj) {
+	if !auth.CanPublish(identity(r), obj) {
 		writeErr(w, http.StatusForbidden, "insufficient permission")
 		return
 	}
