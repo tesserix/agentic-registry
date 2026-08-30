@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -291,12 +292,24 @@ func (s *Server) v0Get(w http.ResponseWriter, r *http.Request) {
 	s.getObject(w, r, chi.URLParam(r, "tag"))
 }
 
+func artifactName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	name, err := url.PathUnescape(chi.URLParam(r, "name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid artifact name")
+		return "", false
+	}
+	return name, true
+}
+
 func (s *Server) getObject(w http.ResponseWriter, r *http.Request, tag string) {
 	kind, ok := s.kindFromPath(w, r)
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "name")
+	name, ok := artifactName(w, r)
+	if !ok {
+		return
+	}
 	obj, err := s.store.Get(r.Context(), kind, s.resolveNamespace(r, kind, name), name, tag)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
@@ -319,7 +332,10 @@ func (s *Server) v0Tags(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "name")
+	name, ok := artifactName(w, r)
+	if !ok {
+		return
+	}
 	ns := s.resolveNamespace(r, kind, name)
 	// Confirm read access via the latest tag before listing tags.
 	latest, err := s.store.Get(r.Context(), kind, ns, name, "")
@@ -349,7 +365,10 @@ func (s *Server) v0Revisions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "name")
+	name, ok := artifactName(w, r)
+	if !ok {
+		return
+	}
 	ns := s.resolveNamespace(r, kind, name)
 	// Confirm read access via the latest tag before exposing history.
 	latest, err := s.store.Get(r.Context(), kind, ns, name, "")
