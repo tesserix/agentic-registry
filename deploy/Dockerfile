@@ -41,6 +41,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -o /out/agentic-probe ./cmd/agentic-probe
 
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-s -w" \
+    -trimpath \
+    -o /out/agentgateway-sync ./cmd/agentgateway-sync
+
 # Named runtime user `aregistry` at uid 1000 (tesserix backend convention,
 # same uid devai/fanzone use). distroless has no shell to adduser, so the
 # passwd/group entries are created here and copied into the final image.
@@ -54,6 +59,7 @@ WORKDIR /app
 COPY --from=build /etc/passwd /etc/group /etc/
 COPY --from=build --chown=aregistry:aregistry /out/agentic-registry /app/agentic-registry
 COPY --from=build --chown=aregistry:aregistry /out/agentic-probe    /app/agentic-probe
+COPY --from=build --chown=aregistry:aregistry /out/agentgateway-sync /app/agentgateway-sync
 COPY --from=web   --chown=aregistry:aregistry /web/dist             /app/web
 ENV ADDR=:8080 \
     STORE_BACKEND=postgres \

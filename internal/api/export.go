@@ -110,9 +110,28 @@ func (s *Server) v0ExportAgentgateway(w http.ResponseWriter, r *http.Request) {
 	}
 	out = combined.Bytes()
 	digest := sha256.Sum256(out)
+	resourceDigest := fmt.Sprintf("sha256:%x", digest)
+	etag := `"` + resourceDigest + `"`
+	w.Header().Set("Cache-Control", "private, no-cache")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Vary", "Authorization, X-Agentic-Registry-Deploy-Key")
 	w.Header().Set("X-Agentgateway-Resource-Count", strconv.Itoa(countYAMLResources(out)))
-	w.Header().Set("X-Agentgateway-Resource-Digest", fmt.Sprintf("sha256:%x", digest))
+	w.Header().Set("X-Agentgateway-Resource-Digest", resourceDigest)
+	if matchesETag(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	writeYAML(w, out)
+}
+
+func matchesETag(header, current string) bool {
+	for candidate := range strings.SplitSeq(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || candidate == current {
+			return true
+		}
+	}
+	return false
 }
 
 // exportNamespaces splits the comma-separated tenant list, preserving order so
