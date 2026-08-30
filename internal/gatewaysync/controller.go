@@ -3,7 +3,6 @@ package gatewaysync
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"time"
 )
