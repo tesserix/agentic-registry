@@ -153,6 +153,26 @@ func TestBuildRoutes_SkipsDirectoryEntries(t *testing.T) {
 	}
 }
 
+func TestBuildRoutes_SkipsServersThatDisableGatewayExport(t *testing.T) {
+	disabledBySpec := remoteServer("google-vertex-mcp", "https://aiplatform.googleapis.com/mcp/generate")
+	disabledBySpec.Spec["gatewayExport"] = false
+
+	disabledByLabel := remoteServer("google-registry-mcp", "https://agentregistry.googleapis.com/mcp")
+	disabledByLabel.Metadata.Labels = map[string]string{"mcp.tesserix.app/gateway-export": "false"}
+
+	routes, err := BuildRoutes([]v1alpha1.Object{
+		disabledBySpec,
+		disabledByLabel,
+		remoteServer("sample-mcp", "http://sample.devai.svc.cluster.local:8080/mcp"),
+	}, Options{Namespace: "agentgateway-system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Server != "sample-mcp" {
+		t.Fatalf("want only the gateway-exported server routed, got %+v", routes)
+	}
+}
+
 func TestBuildRoutes_SkipsServerWithoutRemote(t *testing.T) {
 	servers := []v1alpha1.Object{
 		{Kind: v1alpha1.KindMCPServer, Metadata: v1alpha1.ObjectMeta{Name: "no-remote"}, Spec: map[string]interface{}{"name": "no-remote"}},

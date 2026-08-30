@@ -166,7 +166,7 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 
 	for _, srv := range servers {
 		name := serverName(srv)
-		if name == "" || isDirectory(srv) {
+		if name == "" || isDirectory(srv) || gatewayExportDisabled(srv) {
 			continue
 		}
 		san := adapters.SanitizeName(name)
@@ -499,6 +499,17 @@ func isDirectory(srv v1alpha1.Object) bool {
 		return true
 	}
 	return srv.Metadata.Labels["mcp.devai.io/catalog"] == "true"
+}
+
+// gatewayExportDisabled keeps a server discoverable by Registry consumers
+// while excluding it from Gateway routing. This is useful for runtimes such as
+// the DevAI Hub that can provide workload-local authentication (for example,
+// GCP ADC) which the shared Gateway data plane does not hold.
+func gatewayExportDisabled(srv v1alpha1.Object) bool {
+	if enabled, ok := srv.Spec["gatewayExport"].(bool); ok && !enabled {
+		return true
+	}
+	return srv.Metadata.Labels["mcp.tesserix.app/gateway-export"] == "false"
 }
 
 // firstRemote returns the first remote endpoint URL and its transport hint,
