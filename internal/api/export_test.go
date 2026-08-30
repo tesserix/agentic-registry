@@ -65,6 +65,54 @@ func TestExportAgentgateway(t *testing.T) {
 	}
 }
 
+func TestExportAgentgatewaySupportsConditionalGet(t *testing.T) {
+	srv, st := testServer(t)
+	seedMCPAndAgent(t, st)
+
+	first := httptest.NewRecorder()
+	srv.ServeHTTP(first, httptest.NewRequest(
+		http.MethodGet,
+		"/v0/export/agentgateway?namespace=devai",
+		nil,
+	))
+
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status: got %d, body %s", first.Code, first.Body.String())
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("first response has no ETag")
+	}
+	if got := first.Header().Get("Cache-Control"); got != "private, no-cache" {
+		t.Fatalf("cache control: got %q", got)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v0/export/agentgateway?namespace=devai",
+		nil,
+	)
+	request.Header.Set("If-None-Match", etag)
+	second := httptest.NewRecorder()
+	srv.ServeHTTP(second, request)
+
+	if second.Code != http.StatusNotModified {
+		t.Fatalf("conditional status: got %d, body %s", second.Code, second.Body.String())
+	}
+	if second.Body.Len() != 0 {
+		t.Fatalf("conditional response body: got %q", second.Body.String())
+	}
+	if second.Header().Get("ETag") != etag {
+		t.Fatalf("conditional ETag: got %q, want %q", second.Header().Get("ETag"), etag)
+	}
+	if second.Header().Get("X-Agentgateway-Resource-Count") == "" {
+		t.Fatal("conditional response has no resource count")
+	}
+	if second.Header().Get("X-Agentgateway-Resource-Digest") == "" {
+		t.Fatal("conditional response has no resource digest")
+	}
+}
+
 func TestExportKagent(t *testing.T) {
 	srv, st := testServer(t)
 	seedMCPAndAgent(t, st)
