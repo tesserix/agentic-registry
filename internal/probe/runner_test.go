@@ -96,8 +96,10 @@ func TestRunner_DirectoryEntriesAreNotProbed(t *testing.T) {
 
 	directory := mcpServer("devai", "catalog-slack-mcp", "")
 	directory.Spec["catalog"] = true
+	hubOnly := mcpServer("devai", "google-vertex-mcp", "")
+	hubOnly.Spec["gatewayExport"] = false
 	registry := &fakeRegistry{servers: map[string][]v1alpha1.Object{
-		"devai": {directory, mcpServer("devai", "devai-mcp", "")},
+		"devai": {directory, hubOnly, mcpServer("devai", "devai-mcp", "")},
 	}}
 	runner := Runner{Registry: registry, GatewayURL: gateway.URL, HTTP: gateway.Client(), Now: fixedNow}
 
@@ -106,7 +108,7 @@ func TestRunner_DirectoryEntriesAreNotProbed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if summary.Probed != 1 {
-		t.Errorf("a directory entry has no platform credential and must not be probed: %+v", summary)
+		t.Errorf("only gateway-exported servers may be probed: %+v", summary)
 	}
 	if registry.recorded[0].name != "devai-mcp" {
 		t.Errorf("probed %s", registry.recorded[0].name)
