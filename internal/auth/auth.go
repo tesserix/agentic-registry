@@ -429,6 +429,15 @@ func CanWrite(id Identity, o v1alpha1.Object) bool {
 	return canMutate(id, o, ScopeWrite)
 }
 
+// CanObserveActivation permits a verified control-plane actor to report only
+// the activation conditions it owns for a tenant-scoped MCP server.
+func CanObserveActivation(id Identity, o v1alpha1.Object, actor string) bool {
+	if !CanWrite(id, o) {
+		return false
+	}
+	return contains(id.Groups, "registry:"+actor)
+}
+
 func CanPublish(id Identity, o v1alpha1.Object) bool {
 	return canMutate(id, o, ScopePublish, ScopeWrite) && credentialActionAllowed(id, o, "registry.publisher")
 }

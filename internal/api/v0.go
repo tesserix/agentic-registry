@@ -94,6 +94,7 @@ func (s *Server) mountV0(r chi.Router) {
 			// Capability probe results (MCPServer kind only): what the server
 			// actually serves, compared against what it declares.
 			r.Put("/{name}/status", s.v0PutMCPServerStatus)
+			r.Put("/{name}/{tag}/activation/conditions", s.v0PutActivationCondition)
 			r.Get("/{name}/{tag}", s.v0Get)
 			r.Delete("/{name}/{tag}", s.v0Delete)
 		})

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tesserix/agentic-registry/internal/activation"
 	"github.com/tesserix/agentic-registry/internal/selector"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
@@ -182,6 +183,10 @@ type Store interface {
 	// an artifact's status. It never touches spec: a probe observes, the
 	// manifest declares.
 	MergeStatus(ctx context.Context, kind v1alpha1.Kind, namespace, name, tag string, patch map[string]interface{}) error
+
+	// ObserveActivation atomically validates and records one actor-owned
+	// activation condition against an immutable MCPServer version.
+	ObserveActivation(ctx context.Context, namespace, name, tag string, observation activation.Observation) (activation.Status, error)
 
 	// Counts returns the number of readable artifacts per kind in a namespace.
 	Counts(ctx context.Context, namespace string, canRead func(v1alpha1.Object) bool) (map[v1alpha1.Kind]int, error)

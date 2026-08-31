@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/tesserix/agentic-registry/internal/activation"
 	"github.com/tesserix/agentic-registry/internal/embed"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
@@ -708,6 +709,63 @@ func (p *Postgres) MergeStatus(ctx context.Context, kind v1alpha1.Kind, ns, name
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (p *Postgres) ObserveActivation(ctx context.Context, ns, name, tag string, observation activation.Observation) (activation.Status, error) {
+	var result activation.Status
+	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT kind, namespace, name, tag, uid, api_version, visibility, tenant_id, org_id, team_id,
+			content_hash, labels, annotations, spec, status, created_at, updated_at, deletion_timestamp
+			FROM registry.artifacts WHERE kind=$1 AND namespace=$2 AND name=$3 AND tag=$4 FOR UPDATE`,
+			string(v1alpha1.KindMCPServer), ns, name, tag)
+		if err != nil {
+			return fmt.Errorf("postgres: lock activation status: %w", err)
+		}
+		objects, err := scanRows(rows)
+		if err != nil {
+			return err
+		}
+		if len(objects) == 0 {
+			return ErrNotFound
+		}
+		object := objects[0]
+		var current activation.Status
+		if document, ok := object.Status["activation"].(map[string]interface{}); ok {
+			current, err = activation.DecodeDocument(document)
+		} else {
+			current, err = activation.NewForMCPServer(object, time.Now().UTC())
+		}
+		if err != nil {
+			return err
+		}
+		result, err = current.Observe(observation)
+		if err != nil {
+			return err
+		}
+		document, err := activation.Document(result)
+		if err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(document)
+		if err != nil {
+			return fmt.Errorf("postgres: marshal activation status: %w", err)
+		}
+		ct, err := tx.Exec(ctx, `UPDATE registry.artifacts
+			SET status=jsonb_set(coalesce(status, '{}'::jsonb), '{activation}', $5::jsonb, true), updated_at=now()
+			WHERE kind=$1 AND namespace=$2 AND name=$3 AND tag=$4`,
+			string(v1alpha1.KindMCPServer), ns, name, tag, encoded)
+		if err != nil {
+			return fmt.Errorf("postgres: store activation status: %w", err)
+		}
+		if ct.RowsAffected() != 1 {
+			return ErrNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		return activation.Status{}, err
+	}
+	return result, nil
 }
 
 func (p *Postgres) SetStatus(ctx context.Context, kind v1alpha1.Kind, ns, name, tag, status string) error {
