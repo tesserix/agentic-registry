@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/tesserix/agentic-registry/internal/activation"
 	"github.com/tesserix/agentic-registry/internal/embed"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
@@ -446,6 +447,39 @@ func (m *Memory) MergeStatus(_ context.Context, kind v1alpha1.Kind, ns, name, ta
 	o.Status = merged
 	m.objs[key(kind, ns, name, tag)] = o
 	return nil
+}
+
+func (m *Memory) ObserveActivation(_ context.Context, ns, name, tag string, observation activation.Observation) (activation.Status, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o, ok := m.objs[key(v1alpha1.KindMCPServer, ns, name, tag)]
+	if !ok {
+		return activation.Status{}, ErrNotFound
+	}
+	var current activation.Status
+	var err error
+	if document, ok := o.Status["activation"].(map[string]interface{}); ok {
+		current, err = activation.DecodeDocument(document)
+	} else {
+		current, err = activation.NewForMCPServer(o, m.now().UTC())
+	}
+	if err != nil {
+		return activation.Status{}, err
+	}
+	next, err := current.Observe(observation)
+	if err != nil {
+		return activation.Status{}, err
+	}
+	document, err := activation.Document(next)
+	if err != nil {
+		return activation.Status{}, err
+	}
+	if o.Status == nil {
+		o.Status = map[string]interface{}{}
+	}
+	o.Status["activation"] = document
+	m.objs[key(v1alpha1.KindMCPServer, ns, name, tag)] = o
+	return next, nil
 }
 
 func (m *Memory) SetStatus(_ context.Context, kind v1alpha1.Kind, ns, name, tag, status string) error {
