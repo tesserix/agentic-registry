@@ -11,13 +11,16 @@ import (
 	"time"
 )
 
-// fakeMCP answers initialize/tools/list the way a streamable-HTTP MCP server
+// fakeMCP answers server/discover and tools/list the way a streamable-HTTP MCP server
 // does, recording what it was sent.
 type fakeMCP struct {
-	sse      bool
-	sessions []string
-	methods  []string
-	auth     string
+	sse              bool
+	methods          []string
+	auth             string
+	protocolHeaders  []string
+	methodHeaders    []string
+	requestProtocols []string
+	clientNames      []string
 }
 
 func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -25,17 +28,31 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Method string `json:"method"`
 		ID     any    `json:"id"`
+		Params struct {
+			Meta struct {
+				ProtocolVersion string `json:"io.modelcontextprotocol/protocolVersion"`
+				ClientInfo      struct {
+					Name string `json:"name"`
+				} `json:"io.modelcontextprotocol/clientInfo"`
+			} `json:"_meta"`
+		} `json:"params"`
 	}
 	_ = json.Unmarshal(body, &req)
 	f.methods = append(f.methods, req.Method)
 	f.auth = r.Header.Get("Authorization")
-	f.sessions = append(f.sessions, r.Header.Get("Mcp-Session-Id"))
+	f.protocolHeaders = append(f.protocolHeaders, r.Header.Get("MCP-Protocol-Version"))
+	f.methodHeaders = append(f.methodHeaders, r.Header.Get("MCP-Method"))
+	f.requestProtocols = append(f.requestProtocols, req.Params.Meta.ProtocolVersion)
+	f.clientNames = append(f.clientNames, req.Params.Meta.ClientInfo.Name)
+	if r.Header.Get("Mcp-Session-Id") != "" {
+		http.Error(w, "sessions are forbidden", http.StatusBadRequest)
+		return
+	}
 
 	var result string
 	switch req.Method {
-	case "initialize":
-		w.Header().Set("Mcp-Session-Id", "sess-1")
-		result = `{"protocolVersion":"2025-06-18","capabilities":{"tools":{}}}`
+	case "server/discover":
+		result = `{"supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}`
 	case "tools/list":
 		result = `{"tools":[{"name":"track_delivery"},{"name":"get_order_status"}]}`
 	default:
@@ -65,18 +82,37 @@ func TestProbe_CollectsToolsOverJSON(t *testing.T) {
 	if len(obs.Tools) != 2 || obs.Tools[0] != "track_delivery" {
 		t.Errorf("tools: got %v", obs.Tools)
 	}
-	if obs.ProtocolVersion != "2025-06-18" {
+	if obs.ProtocolVersion != "2026-07-28" {
 		t.Errorf("protocolVersion: got %q", obs.ProtocolVersion)
 	}
 	if fake.auth != "Bearer token-abc" {
 		t.Errorf("probe must present its token: got %q", fake.auth)
 	}
-	if len(fake.methods) < 2 || fake.methods[0] != "initialize" {
-		t.Errorf("handshake order: got %v", fake.methods)
+	if len(fake.methods) != 2 || fake.methods[0] != "server/discover" || fake.methods[1] != "tools/list" {
+		t.Errorf("stateless probe order: got %v", fake.methods)
 	}
-	// The session the server handed out has to come back on tools/list.
-	if last := fake.sessions[len(fake.sessions)-1]; last != "sess-1" {
-		t.Errorf("session id not echoed: got %q", last)
+	for i, method := range fake.methods {
+		if fake.protocolHeaders[i] != "2026-07-28" || fake.requestProtocols[i] != "2026-07-28" {
+			t.Errorf("request %d protocol metadata: header=%q body=%q", i, fake.protocolHeaders[i], fake.requestProtocols[i])
+		}
+		if fake.methodHeaders[i] != method {
+			t.Errorf("request %d MCP-Method=%q want %q", i, fake.methodHeaders[i], method)
+		}
+		if fake.clientNames[i] != "agentic-registry-prober" {
+			t.Errorf("request %d clientInfo.name=%q", i, fake.clientNames[i])
+		}
+	}
+}
+
+func TestProbe_RejectsServerWithoutModernStatelessRevision(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2025-11-25"],"capabilities":{},"serverInfo":{"name":"legacy","version":"1"}}}`)
+	}))
+	defer srv.Close()
+
+	obs := Probe(context.Background(), srv.Client(), srv.URL, "t", time.Now())
+	if obs.Reachable || !strings.Contains(obs.Error, "2026-07-28") {
+		t.Fatalf("legacy-only server must not pass production probe: %+v", obs)
 	}
 }
 

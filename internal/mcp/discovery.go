@@ -8,6 +8,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -59,18 +60,31 @@ type rpcResponse struct {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
 }
+
+const modernProtocolVersion = "2026-07-28"
+const maxRequestBody = 1 << 20
 
 func (d *DiscoveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeRPC(w, rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: "parse error"}})
+		status := http.StatusBadRequest
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		writeRPCStatus(w, status, rpcResponse{
+			JSONRPC: "2.0",
+			Error:   &rpcError{Code: -32700, Message: "parse error"},
+		})
 		return
 	}
 	var id interface{}
@@ -78,9 +92,37 @@ func (d *DiscoveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(req.ID, &id)
 	}
 	resp := rpcResponse{JSONRPC: "2.0", ID: id}
+	modern := r.Header.Get("MCP-Protocol-Version") != ""
+	if modern {
+		if r.Header.Get("Mcp-Session-Id") != "" {
+			writeRPCStatus(w, http.StatusNotFound, rpcResponse{
+				JSONRPC: "2.0", ID: id,
+				Error: &rpcError{Code: -32600, Message: "invalid session"},
+			})
+			return
+		}
+		if status, rpcErr := validateModernRequest(r, req); rpcErr != nil {
+			writeRPCStatus(w, status, rpcResponse{JSONRPC: "2.0", ID: id, Error: rpcErr})
+			return
+		}
+	}
 
 	switch req.Method {
+	case "server/discover":
+		if !modern {
+			resp.Error = &rpcError{Code: -32601, Message: "method not found: " + req.Method}
+			break
+		}
+		resp.Result = map[string]interface{}{
+			"supportedVersions": []string{modernProtocolVersion},
+			"capabilities":      map[string]interface{}{"tools": map[string]interface{}{}},
+			"serverInfo":        map[string]interface{}{"name": "agentic-registry", "version": "v0"},
+		}
 	case "initialize":
+		if modern {
+			resp.Error = &rpcError{Code: -32601, Message: "method not found: " + req.Method}
+			break
+		}
 		resp.Result = map[string]interface{}{
 			"protocolVersion": "2025-06-18",
 			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
@@ -100,12 +142,51 @@ func (d *DiscoveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		resp.Error = &rpcError{Code: -32601, Message: "method not found: " + req.Method}
 	}
-	writeRPC(w, resp)
+	status := http.StatusOK
+	if modern && resp.Error != nil && resp.Error.Code == -32601 {
+		status = http.StatusNotFound
+	}
+	writeRPCStatus(w, status, resp)
 }
 
 func writeRPC(w http.ResponseWriter, resp rpcResponse) {
+	writeRPCStatus(w, http.StatusOK, resp)
+}
+
+func writeRPCStatus(w http.ResponseWriter, status int, resp rpcResponse) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func validateModernRequest(r *http.Request, req rpcRequest) (int, *rpcError) {
+	headerVersion := r.Header.Get("MCP-Protocol-Version")
+	if headerVersion != modernProtocolVersion {
+		return http.StatusBadRequest, &rpcError{
+			Code:    -32022,
+			Message: "unsupported protocol version",
+			Data: map[string]interface{}{
+				"requestedVersion":  headerVersion,
+				"supportedVersions": []string{modernProtocolVersion},
+			},
+		}
+	}
+	if r.Header.Get("MCP-Method") != req.Method {
+		return http.StatusBadRequest, &rpcError{Code: -32020, Message: "routing header mismatch"}
+	}
+	var params struct {
+		Meta struct {
+			ProtocolVersion    string                 `json:"io.modelcontextprotocol/protocolVersion"`
+			ClientCapabilities map[string]interface{} `json:"io.modelcontextprotocol/clientCapabilities"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil || params.Meta.ClientCapabilities == nil {
+		return http.StatusBadRequest, &rpcError{Code: -32602, Message: "invalid request metadata"}
+	}
+	if params.Meta.ProtocolVersion != headerVersion {
+		return http.StatusBadRequest, &rpcError{Code: -32020, Message: "routing header mismatch"}
+	}
+	return http.StatusOK, nil
 }
 
 func toolDefs() []map[string]interface{} {

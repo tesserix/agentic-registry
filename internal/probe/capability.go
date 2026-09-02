@@ -41,6 +41,14 @@ func StatusFor(spec map[string]interface{}, obs Observation) map[string]interfac
 		}
 		return status
 	}
+	if obs.ProtocolVersion != protocolVersion {
+		message := fmt.Sprintf("server does not support required protocol %s", protocolVersion)
+		status["conditions"] = []map[string]interface{}{
+			condition("Ready", "False", "UnsupportedProtocol", message, obs.ProbedAt),
+			condition("Unreachable", "False", "Probed", "", obs.ProbedAt),
+		}
+		return status
+	}
 
 	observedTools := normalize(obs.Tools)
 	status["observedTools"] = observedTools
