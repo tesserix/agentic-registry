@@ -8,6 +8,7 @@ Skills · Tools · MCP Servers · Prompts · Workflows · Blueprints · Agents
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tesserix/agentic-registry/actions/workflows/ci.yml/badge.svg)](https://github.com/tesserix/agentic-registry/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tesserix/agentic-registry)](https://github.com/tesserix/agentic-registry/releases/latest)
 [![CodeQL](https://github.com/tesserix/agentic-registry/actions/workflows/codeql.yml/badge.svg)](https://github.com/tesserix/agentic-registry/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tesserix/agentic-registry/badge)](https://scorecard.dev/viewer/?uri=github.com/tesserix/agentic-registry)
 [![Go Report Card](https://goreportcard.com/badge/github.com/tesserix/agentic-registry)](https://goreportcard.com/report/github.com/tesserix/agentic-registry)
