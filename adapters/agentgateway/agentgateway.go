@@ -166,7 +166,7 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 
 	for _, srv := range servers {
 		name := serverName(srv)
-		if name == "" || isDirectory(srv) || gatewayExportDisabled(srv) {
+		if name == "" || !gatewayExportQualified(srv) || isDirectory(srv) || gatewayExportDisabled(srv) {
 			continue
 		}
 		san := adapters.SanitizeName(name)
@@ -499,6 +499,11 @@ func isDirectory(srv v1alpha1.Object) bool {
 		return true
 	}
 	return srv.Metadata.Labels["mcp.devai.io/catalog"] == "true"
+}
+
+func gatewayExportQualified(srv v1alpha1.Object) bool {
+	return srv.Metadata.Labels["mcp.tesserix.app/class"] == "platform" &&
+		srv.Spec["protocolVersion"] == "2026-07-28"
 }
 
 // gatewayExportDisabled keeps a server discoverable by Registry consumers

@@ -17,11 +17,12 @@ func seedMCPAndAgent(t *testing.T, st interface {
 	ctx := context.Background()
 	if _, _, err := st.Apply(ctx, v1alpha1.Object{
 		Kind:     v1alpha1.KindMCPServer,
-		Metadata: v1alpha1.ObjectMeta{Name: "github", Namespace: "devai"},
+		Metadata: v1alpha1.ObjectMeta{Name: "github", Namespace: "devai", Labels: map[string]string{"mcp.tesserix.app/class": "platform"}},
 		Spec: map[string]any{
-			"name":    "github",
-			"remotes": []any{map[string]any{"type": "streamableHttp", "url": "https://gh.example/mcp"}},
-			"tools":   []any{"get_pr", "create_pr"},
+			"name":            "github",
+			"protocolVersion": "2026-07-28",
+			"remotes":         []any{map[string]any{"type": "streamableHttp", "url": "https://gh.example/mcp"}},
+			"tools":           []any{"get_pr", "create_pr"},
 		},
 	}); err != nil {
 		t.Fatalf("seed mcp: %v", err)
@@ -215,10 +216,11 @@ func seedTenantMCP(t *testing.T, st interface {
 	t.Helper()
 	if _, _, err := st.Apply(context.Background(), v1alpha1.Object{
 		Kind:     v1alpha1.KindMCPServer,
-		Metadata: v1alpha1.ObjectMeta{Name: name, Namespace: namespace},
+		Metadata: v1alpha1.ObjectMeta{Name: name, Namespace: namespace, Labels: map[string]string{"mcp.tesserix.app/class": "platform"}},
 		Spec: map[string]any{
-			"name":    name,
-			"remotes": []any{map[string]any{"type": "streamableHttp", "url": "https://" + name + ".example/mcp"}},
+			"name":            name,
+			"protocolVersion": "2026-07-28",
+			"remotes":         []any{map[string]any{"type": "streamableHttp", "url": "https://" + name + ".example/mcp"}},
 		},
 	}); err != nil {
 		t.Fatalf("seed %s/%s: %v", namespace, name, err)
