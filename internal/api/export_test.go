@@ -56,13 +56,17 @@ func TestExportAgentgateway(t *testing.T) {
 	for _, want := range []string{
 		"kind: AgentgatewayBackend",
 		"kind: HTTPRoute",
-		"name: github",
+		"name: devai-github",
+		"spec:\n  static:",
 		"host: gh.example",
 		"value: /mcp/github",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("agentgateway export missing %q\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, "spec:\n  mcp:") {
+		t.Fatalf("stateless export must not enable AgentGateway MCP sessions:\n%s", body)
 	}
 }
 
