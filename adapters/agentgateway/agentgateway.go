@@ -192,18 +192,6 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 			"mcp.tesserix.app/tenant":      tenant,
 		}
 
-		targetSpec := map[string]interface{}{"name": san}
-		if tgt.selector != nil {
-			targetSpec["selector"] = tgt.selector
-		} else {
-			targetSpec["static"] = map[string]interface{}{
-				"host":     tgt.host,
-				"port":     tgt.port,
-				"path":     tgt.path,
-				"protocol": tgt.protocol,
-			}
-		}
-
 		backend := map[string]interface{}{
 			"apiVersion": backendAPIVersion,
 			"kind":       backendKind,
@@ -213,27 +201,16 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 				"labels":    labels,
 			},
 			"spec": map[string]interface{}{
-				"mcp": map[string]interface{}{
-					"targets": []interface{}{targetSpec},
+				"static": map[string]interface{}{
+					"host": tgt.host,
+					"port": tgt.port,
 				},
 			},
 		}
 
-		matches := []interface{}{
-			map[string]interface{}{
-				"path": map[string]interface{}{
-					"type":  "PathPrefix",
-					"value": path,
-				},
-			},
-		}
+		rules := []interface{}{statelessHTTPRouteRule(path, tgt, resourceName)}
 		if *opts.LegacyFlatPath && tenantsPerServer[san] == 1 {
-			matches = append(matches, map[string]interface{}{
-				"path": map[string]interface{}{
-					"type":  "PathPrefix",
-					"value": opts.PathPrefix + "/" + san,
-				},
-			})
+			rules = append(rules, statelessHTTPRouteRule(opts.PathPrefix+"/"+san, tgt, resourceName))
 		}
 
 		httpRoute := map[string]interface{}{
@@ -251,18 +228,7 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 						"namespace": opts.GatewayNamespace,
 					},
 				},
-				"rules": []interface{}{
-					map[string]interface{}{
-						"matches": matches,
-						"backendRefs": []interface{}{
-							map[string]interface{}{
-								"group": backendGroup,
-								"kind":  backendKind,
-								"name":  resourceName,
-							},
-						},
-					},
-				},
+				"rules": rules,
 			},
 		}
 
@@ -294,6 +260,38 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Name < routes[j].Name })
 	return routes, nil
+}
+
+func statelessHTTPRouteRule(matchPath string, tgt target, resourceName string) map[string]interface{} {
+	return map[string]interface{}{
+		"matches": []interface{}{
+			map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":  "PathPrefix",
+					"value": matchPath,
+				},
+			},
+		},
+		"filters": []interface{}{
+			map[string]interface{}{
+				"type": "URLRewrite",
+				"urlRewrite": map[string]interface{}{
+					"hostname": tgt.host,
+					"path": map[string]interface{}{
+						"type":               "ReplacePrefixMatch",
+						"replacePrefixMatch": tgt.path,
+					},
+				},
+			},
+		},
+		"backendRefs": []interface{}{
+			map[string]interface{}{
+				"group": backendGroup,
+				"kind":  backendKind,
+				"name":  resourceName,
+			},
+		},
+	}
 }
 
 // scopePolicy renders the per-route authorization: a caller reaches this one
@@ -429,24 +427,24 @@ func serverName(srv v1alpha1.Object) string {
 	return srv.Metadata.Name
 }
 
-// targetFor resolves where a server's Backend points. An explicit Kubernetes
-// Service selector takes precedence over remotes because it lets AgentGateway
-// use WDS/HBONE and preserve its workload identity. Public/SaaS servers retain
-// their static URL target. A server with neither has no resolvable upstream.
+// targetFor resolves the registered URL for a server's stateless HTTP backend.
+// Service selectors are still validated, but the URL remains authoritative:
+// AgentGateway's selector-based MCP target enables legacy session handling.
 func targetFor(srv v1alpha1.Object) (target, bool, error) {
 	selector, present, err := serviceSelectorFor(srv)
 	if err != nil {
 		return target{}, false, err
-	}
-	if present {
-		return target{selector: selector}, true, nil
 	}
 
 	u, transport := firstRemote(srv)
 	if u == "" {
 		return target{}, false, nil
 	}
-	return parseRemote(u, transport), true, nil
+	tgt := parseRemote(u, transport)
+	if present {
+		tgt.selector = selector
+	}
+	return tgt, true, nil
 }
 
 // serviceSelectorFor accepts the portable Registry extension used for

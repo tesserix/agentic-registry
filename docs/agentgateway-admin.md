@@ -25,6 +25,12 @@ on the server.
 4. Solo AgentGateway converts those Kubernetes resources to XDS and keeps the
    last accepted snapshot serving inference and MCP traffic.
 
+For protocol `2026-07-28`, Registry renders a static HTTP backend plus
+URLRewrite rather than AgentGateway's session-aware MCP target. Gateway JWT,
+tenant authorization, rate limits, telemetry, and vault-backed credential
+injection still apply, but MCP messages pass through unchanged. See
+[ADR-0007](adr/0007-stateless-mcp-http-pass-through.md).
+
 Registry is not in the inference path. If the UI, Registry, or reconciler is
 temporarily unavailable, existing model and MCP requests continue. New writes
 fail closed and reconcile on a later run.
@@ -61,13 +67,18 @@ Select a server in `https://mcp.tesserix.app`, obtain a machine token with the
 `agentgateway.mcp` role, and use the displayed endpoint:
 
 ```text
-https://mcp.tesserix.app/mcp/<server-name>
+https://mcp.tesserix.app/mcp/<tenant>/<server-name>
 ```
 
 The MCP UI provides ready-to-copy settings for Codex, Claude Code, Cursor, and
 VS Code. Products should keep the token in their runtime secret store and send
 it as `Authorization: Bearer ...`; it must never be embedded in source or a
 frontend bundle.
+
+Clients send `MCP-Protocol-Version: 2026-07-28` and call `server/discover` and
+`tools/list` as independent requests. They must not send or retain an
+`Mcp-Session-Id`. The unqualified `/mcp/<server-name>` compatibility route is
+available only while that server name belongs to exactly one tenant.
 
 ## Administration API
 
