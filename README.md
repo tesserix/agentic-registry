@@ -70,7 +70,10 @@ yourself and point **any** agentic gateway at.
 - **Gateway adapters** — export live registry state to a runtime's native config
   (`agentgateway`, `kagent`) without the registry ever being on the request path.
 - **Built-in MCP discovery server** — agentic IDEs browse the catalog *through MCP itself*
-  (`list_skills`, `get_server`, `search_registry`, …).
+  (`list_skills`, `get_server`, `search_registry`, …) over stateless MCP `2026-07-28`;
+  the legacy initialize path remains compatibility-only.
+- **Digest-safe capability probing** — `server/discover` and self-contained `tools/list`
+  qualify routed servers without sessions; legacy-only servers cannot become ready.
 - **Registry-owned semantic discovery** — pgvector ranks a secret-safe projection of capability
   annotations, relationships, tags, and Tool schemas; gateways fetch exact hits progressively.
 - **Marketplace UI + `agentic` CLI** — browse in the web app; `init`/`apply`/`push`/`pull`/`render`

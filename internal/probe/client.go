@@ -11,9 +11,7 @@ import (
 	"time"
 )
 
-// protocolVersion is the MCP revision the probe negotiates. A server that
-// speaks a different one answers with its own, which is recorded as observed.
-const protocolVersion = "2025-06-18"
+const protocolVersion = "2026-07-28"
 
 const maxProbeResponse = 4 << 20
 
@@ -25,32 +23,30 @@ type rpcResponse struct {
 	} `json:"error"`
 }
 
-// Probe performs one MCP handshake against url and reports the tool surface it
+// Probe performs one stateless MCP discovery against url and reports the tool surface it
 // observed. Every failure mode is an unreachable observation rather than an
 // error, so one broken server cannot fail a whole probe run.
 func Probe(ctx context.Context, client *http.Client, url, bearer string, at time.Time) Observation {
-	session := ""
-
-	init, err := call(ctx, client, url, bearer, &session, "initialize", map[string]interface{}{
-		"protocolVersion": protocolVersion,
-		"capabilities":    map[string]interface{}{},
-		"clientInfo":      map[string]interface{}{"name": "agentic-registry-prober", "version": "1"},
-	})
+	discovery, err := call(ctx, client, url, bearer, "server/discover", map[string]interface{}{})
 	if err != nil {
 		return Observation{Error: err.Error(), ProbedAt: at}
 	}
-	var initResult struct {
-		ProtocolVersion string `json:"protocolVersion"`
+	var discoveryResult struct {
+		SupportedVersions []string `json:"supportedVersions"`
 	}
-	_ = json.Unmarshal(init, &initResult)
-
-	if err := notify(ctx, client, url, bearer, session); err != nil {
-		return Observation{Error: err.Error(), ProbedAt: at}
+	if err := json.Unmarshal(discovery, &discoveryResult); err != nil {
+		return Observation{Error: "server/discover: " + err.Error(), ProbedAt: at}
+	}
+	if !contains(discoveryResult.SupportedVersions, protocolVersion) {
+		return Observation{
+			Error:    "server/discover: server does not support " + protocolVersion,
+			ProbedAt: at,
+		}
 	}
 
-	list, err := call(ctx, client, url, bearer, &session, "tools/list", map[string]interface{}{})
+	list, err := call(ctx, client, url, bearer, "tools/list", map[string]interface{}{})
 	if err != nil {
-		return Observation{ProtocolVersion: initResult.ProtocolVersion, Error: err.Error(), ProbedAt: at}
+		return Observation{ProtocolVersion: protocolVersion, Error: err.Error(), ProbedAt: at}
 	}
 	var listResult struct {
 		Tools []struct {
@@ -58,7 +54,7 @@ func Probe(ctx context.Context, client *http.Client, url, bearer string, at time
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(list, &listResult); err != nil {
-		return Observation{ProtocolVersion: initResult.ProtocolVersion, Error: "tools/list: " + err.Error(), ProbedAt: at}
+		return Observation{ProtocolVersion: protocolVersion, Error: "tools/list: " + err.Error(), ProbedAt: at}
 	}
 	tools := make([]string, 0, len(listResult.Tools))
 	for _, t := range listResult.Tools {
@@ -67,13 +63,27 @@ func Probe(ctx context.Context, client *http.Client, url, bearer string, at time
 	return Observation{
 		Reachable:       true,
 		Tools:           tools,
-		ProtocolVersion: initResult.ProtocolVersion,
+		ProtocolVersion: protocolVersion,
 		ProbedAt:        at,
 	}
 }
 
-func call(ctx context.Context, client *http.Client, url, bearer string, session *string, method string, params map[string]interface{}) (json.RawMessage, error) {
-	body, err := post(ctx, client, url, bearer, session, map[string]interface{}{
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func call(ctx context.Context, client *http.Client, url, bearer, method string, params map[string]interface{}) (json.RawMessage, error) {
+	params["_meta"] = map[string]interface{}{
+		"io.modelcontextprotocol/protocolVersion":    protocolVersion,
+		"io.modelcontextprotocol/clientInfo":         map[string]interface{}{"name": "agentic-registry-prober", "version": "1"},
+		"io.modelcontextprotocol/clientCapabilities": map[string]interface{}{},
+	}
+	body, err := post(ctx, client, url, bearer, method, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  method,
@@ -96,18 +106,7 @@ func call(ctx context.Context, client *http.Client, url, bearer string, session 
 	return resp.Result, nil
 }
 
-func notify(ctx context.Context, client *http.Client, url, bearer, session string) error {
-	_, err := post(ctx, client, url, bearer, &session, map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  "notifications/initialized",
-	})
-	if err != nil {
-		return fmt.Errorf("notifications/initialized: %w", err)
-	}
-	return nil
-}
-
-func post(ctx context.Context, client *http.Client, url, bearer string, session *string, payload map[string]interface{}) ([]byte, error) {
+func post(ctx context.Context, client *http.Client, url, bearer, method string, payload map[string]interface{}) ([]byte, error) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -118,11 +117,10 @@ func post(ctx context.Context, client *http.Client, url, bearer string, session 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("MCP-Protocol-Version", protocolVersion)
+	req.Header.Set("MCP-Method", method)
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
-	}
-	if session != nil && *session != "" {
-		req.Header.Set("Mcp-Session-Id", *session)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -130,11 +128,6 @@ func post(ctx context.Context, client *http.Client, url, bearer string, session 
 	}
 	defer resp.Body.Close()
 
-	if session != nil && *session == "" {
-		if id := resp.Header.Get("Mcp-Session-Id"); id != "" {
-			*session = id
-		}
-	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}

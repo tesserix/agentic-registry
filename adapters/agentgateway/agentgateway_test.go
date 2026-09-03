@@ -11,13 +11,34 @@ import (
 func remoteServer(name, url string) v1alpha1.Object {
 	return v1alpha1.Object{
 		Kind:     v1alpha1.KindMCPServer,
-		Metadata: v1alpha1.ObjectMeta{Name: name},
+		Metadata: v1alpha1.ObjectMeta{Name: name, Labels: map[string]string{"mcp.tesserix.app/class": "platform"}},
 		Spec: map[string]interface{}{
-			"name": name,
+			"name":            name,
+			"protocolVersion": "2026-07-28",
 			"remotes": []interface{}{
 				map[string]interface{}{"type": "streamableHttp", "url": url},
 			},
 		},
+	}
+}
+
+func TestBuildRoutes_RequiresPlatformApprovalAndStatelessRevision(t *testing.T) {
+	unapproved := remoteServer("unapproved-mcp", "https://unapproved.example/mcp")
+	delete(unapproved.Metadata.Labels, "mcp.tesserix.app/class")
+
+	legacy := remoteServer("legacy-mcp", "https://legacy.example/mcp")
+	legacy.Spec["protocolVersion"] = "2025-11-25"
+
+	routes, err := BuildRoutes([]v1alpha1.Object{
+		unapproved,
+		legacy,
+		remoteServer("approved-mcp", "https://approved.example/mcp"),
+	}, Options{Namespace: "agentgateway-system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Server != "approved-mcp" {
+		t.Fatalf("want only the approved stateless server routed, got %+v", routes)
 	}
 }
 
@@ -209,11 +230,12 @@ func TestBuildRoutes_EndpointDialect(t *testing.T) {
 	servers := []v1alpha1.Object{
 		{
 			Kind:     v1alpha1.KindMCPServer,
-			Metadata: v1alpha1.ObjectMeta{Name: "homechef-mcp"},
+			Metadata: v1alpha1.ObjectMeta{Name: "homechef-mcp", Labels: map[string]string{"mcp.tesserix.app/class": "platform"}},
 			Spec: map[string]interface{}{
-				"name":      "homechef-mcp",
-				"endpoint":  "http://homechef-mcp.homechef.svc.cluster.local:8765/mcp",
-				"transport": "streamable-http",
+				"name":            "homechef-mcp",
+				"endpoint":        "http://homechef-mcp.homechef.svc.cluster.local:8765/mcp",
+				"transport":       "streamable-http",
+				"protocolVersion": "2026-07-28",
 			},
 		},
 	}
@@ -295,7 +317,7 @@ func TestBuildRoutes_InvalidServiceSelectorFailsClosed(t *testing.T) {
 
 func tenantServer(tenant, name, url string) v1alpha1.Object {
 	srv := remoteServer(name, url)
-	srv.Metadata.Labels = map[string]string{tenantLabel: tenant}
+	srv.Metadata.Labels[tenantLabel] = tenant
 	return srv
 }
 
