@@ -122,3 +122,17 @@ func TestDatasetAndEvalSuiteKindsHaveStableCollections(t *testing.T) {
 		})
 	}
 }
+
+func TestGatewayPluralAliases(t *testing.T) {
+	for _, tc := range []struct {
+		plural string
+		kind   Kind
+	}{
+		{plural: "mcp-servers", kind: KindMCPServer},
+		{plural: "eval-suites", kind: KindEvalSuite},
+	} {
+		if got, ok := KindForPlural(tc.plural); !ok || got != tc.kind {
+			t.Errorf("KindForPlural(%q) = %q, %v", tc.plural, got, ok)
+		}
+	}
+}

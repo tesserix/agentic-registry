@@ -17,11 +17,12 @@ func seedMCPAndAgent(t *testing.T, st interface {
 	ctx := context.Background()
 	if _, _, err := st.Apply(ctx, v1alpha1.Object{
 		Kind:     v1alpha1.KindMCPServer,
-		Metadata: v1alpha1.ObjectMeta{Name: "github", Namespace: "devai"},
+		Metadata: v1alpha1.ObjectMeta{Name: "github", Namespace: "devai", Labels: map[string]string{"mcp.tesserix.app/class": "platform"}},
 		Spec: map[string]any{
-			"name":    "github",
-			"remotes": []any{map[string]any{"type": "streamableHttp", "url": "https://gh.example/mcp"}},
-			"tools":   []any{"get_pr", "create_pr"},
+			"name":            "github",
+			"protocolVersion": "2026-07-28",
+			"remotes":         []any{map[string]any{"type": "streamableHttp", "url": "https://gh.example/mcp"}},
+			"tools":           []any{"get_pr", "create_pr"},
 		},
 	}); err != nil {
 		t.Fatalf("seed mcp: %v", err)
@@ -55,13 +56,65 @@ func TestExportAgentgateway(t *testing.T) {
 	for _, want := range []string{
 		"kind: AgentgatewayBackend",
 		"kind: HTTPRoute",
-		"name: github",
+		"name: devai-github",
+		"spec:\n  static:",
 		"host: gh.example",
 		"value: /mcp/github",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("agentgateway export missing %q\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, "spec:\n  mcp:") {
+		t.Fatalf("stateless export must not enable AgentGateway MCP sessions:\n%s", body)
+	}
+}
+
+func TestExportAgentgatewaySupportsConditionalGet(t *testing.T) {
+	srv, st := testServer(t)
+	seedMCPAndAgent(t, st)
+
+	first := httptest.NewRecorder()
+	srv.ServeHTTP(first, httptest.NewRequest(
+		http.MethodGet,
+		"/v0/export/agentgateway?namespace=devai",
+		nil,
+	))
+
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status: got %d, body %s", first.Code, first.Body.String())
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("first response has no ETag")
+	}
+	if got := first.Header().Get("Cache-Control"); got != "private, no-cache" {
+		t.Fatalf("cache control: got %q", got)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v0/export/agentgateway?namespace=devai",
+		nil,
+	)
+	request.Header.Set("If-None-Match", etag)
+	second := httptest.NewRecorder()
+	srv.ServeHTTP(second, request)
+
+	if second.Code != http.StatusNotModified {
+		t.Fatalf("conditional status: got %d, body %s", second.Code, second.Body.String())
+	}
+	if second.Body.Len() != 0 {
+		t.Fatalf("conditional response body: got %q", second.Body.String())
+	}
+	if second.Header().Get("ETag") != etag {
+		t.Fatalf("conditional ETag: got %q, want %q", second.Header().Get("ETag"), etag)
+	}
+	if second.Header().Get("X-Agentgateway-Resource-Count") == "" {
+		t.Fatal("conditional response has no resource count")
+	}
+	if second.Header().Get("X-Agentgateway-Resource-Digest") == "" {
+		t.Fatal("conditional response has no resource digest")
 	}
 }
 
@@ -167,10 +220,11 @@ func seedTenantMCP(t *testing.T, st interface {
 	t.Helper()
 	if _, _, err := st.Apply(context.Background(), v1alpha1.Object{
 		Kind:     v1alpha1.KindMCPServer,
-		Metadata: v1alpha1.ObjectMeta{Name: name, Namespace: namespace},
+		Metadata: v1alpha1.ObjectMeta{Name: name, Namespace: namespace, Labels: map[string]string{"mcp.tesserix.app/class": "platform"}},
 		Spec: map[string]any{
-			"name":    name,
-			"remotes": []any{map[string]any{"type": "streamableHttp", "url": "https://" + name + ".example/mcp"}},
+			"name":            name,
+			"protocolVersion": "2026-07-28",
+			"remotes":         []any{map[string]any{"type": "streamableHttp", "url": "https://" + name + ".example/mcp"}},
 		},
 	}); err != nil {
 		t.Fatalf("seed %s/%s: %v", namespace, name, err)

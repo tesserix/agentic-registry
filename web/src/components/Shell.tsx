@@ -13,6 +13,7 @@ import {
   Search,
   Menu,
   X,
+  KeyRound,
 } from "lucide-react";
 import { api, KINDS, type Health } from "../lib/api";
 import CommandPalette from "./CommandPalette";
@@ -117,6 +118,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="px-3 py-3 border-t space-y-1 shrink-0" style={{ borderColor: "var(--border-subtle)" }}>
+          <NavLink to="/settings/api-credentials" className={`nav-item ${loc.pathname.startsWith("/settings") ? "active" : ""}`}>
+            <KeyRound className="w-4 h-4" />API credentials
+          </NavLink>
           <button onClick={toggleTheme} className="btn-ghost w-full justify-start">
             {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             {dark ? "Light" : "Dark"} mode

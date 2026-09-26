@@ -1,15 +1,20 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/tesserix/agentic-registry/internal/auth"
+	"github.com/tesserix/agentic-registry/internal/discovery"
 	"github.com/tesserix/agentic-registry/internal/render"
 	"github.com/tesserix/agentic-registry/internal/selector"
 	"github.com/tesserix/agentic-registry/internal/store"
@@ -39,6 +44,14 @@ func (s *Server) mountV0(r chi.Router) {
 		// or tenant data; the UI uses it only to hide mutation controls from
 		// callers who are not global registry administrators.
 		r.Get("/session", s.v0Session)
+		r.Get("/auth/config", s.v0AuthConfig)
+		r.Post("/onboarding", s.v0Onboard)
+		r.Route("/settings/api-credentials", func(r chi.Router) {
+			r.Get("/", s.v0ListAPICredentials)
+			r.Post("/", s.v0CreateAPICredential)
+			r.Post("/{credentialID}/rotate", s.v0RotateAPICredential)
+			r.Delete("/{credentialID}", s.v0RevokeAPICredential)
+		})
 
 		// Runtime export — render the catalog into control-plane config the
 		// in-cluster sync Jobs apply. agentgateway: all MCP servers → routing
@@ -81,18 +94,37 @@ func (s *Server) mountV0(r chi.Router) {
 			// Capability probe results (MCPServer kind only): what the server
 			// actually serves, compared against what it declares.
 			r.Put("/{name}/status", s.v0PutMCPServerStatus)
+			r.Put("/{name}/{tag}/activation/conditions", s.v0PutActivationCondition)
 			r.Get("/{name}/{tag}", s.v0Get)
 			r.Delete("/{name}/{tag}", s.v0Delete)
 		})
 	})
 }
 
+func (s *Server) v0AuthConfig(w http.ResponseWriter, _ *http.Request) {
+	scopes := []string{
+		"openid", "offline_access", "urn:zitadel:iam:org:projects:roles",
+		"urn:zitadel:iam:user:metadata", auth.ScopeRead, auth.ScopePublish,
+	}
+	if s.cfg.AuthAudience != "" {
+		scopes = append(scopes, "urn:zitadel:iam:org:project:id:"+s.cfg.AuthAudience+":aud")
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"issuer":    s.cfg.AuthIssuer,
+		"client_id": s.cfg.CLIClientID,
+		"audience":  s.cfg.AuthAudience,
+		"scopes":    scopes,
+	})
+}
+
 func (s *Server) v0Session(w http.ResponseWriter, r *http.Request) {
 	id := identity(r)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"authenticated": id.Authenticated,
-		"email":         id.Email,
-		"admin":         auth.CanAdmin(id),
+		"authenticated":       id.Authenticated,
+		"email":               id.Email,
+		"tenant_id":           id.TenantID,
+		"onboarding_required": id.Authenticated && id.TenantID == "",
+		"admin":               auth.CanAdmin(id),
 	})
 }
 
@@ -203,21 +235,47 @@ func (s *Server) v0Search(w http.ResponseWriter, r *http.Request) {
 	// an empty result, so the marketplace/command palette shows the catalog on
 	// open; a non-empty q runs the ranked (pgvector or substring) search.
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(q) > 512 {
+		writeErr(w, http.StatusBadRequest, "q must be at most 512 characters")
+		return
+	}
+	kinds, err := discovery.ParseKinds(r.URL.Query()["kinds"])
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	view := strings.TrimSpace(r.URL.Query().Get("view"))
+	if view != "" && view != "artifact" && view != "stub" {
+		writeErr(w, http.StatusBadRequest, "view must be artifact or stub")
+		return
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 50
 	} else if limit > 200 {
 		limit = 200
 	}
+	rbac := readPredicate(r)
+	canRead := func(obj v1alpha1.Object) bool {
+		return discovery.Allows(kinds, obj.Kind) && rbac(obj)
+	}
 	res, err := s.store.List(r.Context(), store.ListOptions{
 		Namespace:  listNamespace(r), // absent → all readable namespaces
 		Search:     q,                // "" → no search filter (browse)
 		LatestOnly: true,
 		Limit:      limit,
-		CanRead:    readPredicate(r),
+		CanRead:    canRead,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if view == "stub" {
+		out := make([]discovery.Stub, 0, len(res.Items))
+		for _, obj := range res.Items {
+			out = append(out, discovery.BuildStub(s.withIdentity(obj)))
+		}
+		writeJSON(w, http.StatusOK, out)
 		return
 	}
 	out := make([]v1alpha1.Object, 0, len(res.Items))
@@ -235,12 +293,24 @@ func (s *Server) v0Get(w http.ResponseWriter, r *http.Request) {
 	s.getObject(w, r, chi.URLParam(r, "tag"))
 }
 
+func artifactName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	name, err := url.PathUnescape(chi.URLParam(r, "name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid artifact name")
+		return "", false
+	}
+	return name, true
+}
+
 func (s *Server) getObject(w http.ResponseWriter, r *http.Request, tag string) {
 	kind, ok := s.kindFromPath(w, r)
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "name")
+	name, ok := artifactName(w, r)
+	if !ok {
+		return
+	}
 	obj, err := s.store.Get(r.Context(), kind, s.resolveNamespace(r, kind, name), name, tag)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
@@ -263,7 +333,10 @@ func (s *Server) v0Tags(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "name")
+	name, ok := artifactName(w, r)
+	if !ok {
+		return
+	}
 	ns := s.resolveNamespace(r, kind, name)
 	// Confirm read access via the latest tag before listing tags.
 	latest, err := s.store.Get(r.Context(), kind, ns, name, "")
@@ -293,7 +366,10 @@ func (s *Server) v0Revisions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "name")
+	name, ok := artifactName(w, r)
+	if !ok {
+		return
+	}
 	ns := s.resolveNamespace(r, kind, name)
 	// Confirm read access via the latest tag before exposing history.
 	latest, err := s.store.Get(r.Context(), kind, ns, name, "")
@@ -344,7 +420,7 @@ func (s *Server) applyOne(w http.ResponseWriter, r *http.Request, obj v1alpha1.O
 		return
 	}
 	normalized := obj.Normalized()
-	if !auth.CanWrite(identity(r), normalized) {
+	if !auth.CanPublish(identity(r), normalized) {
 		writeErr(w, http.StatusForbidden, "insufficient permission to publish to tenant "+normalized.Metadata.TenantID)
 		return
 	}
@@ -383,7 +459,7 @@ func (s *Server) v0Delete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	if err == nil && !auth.CanWrite(identity(r), obj) {
+	if err == nil && !auth.CanDelete(identity(r), obj) {
 		writeErr(w, http.StatusForbidden, "insufficient permission")
 		return
 	}
@@ -415,35 +491,64 @@ func (s *Server) v0Apply(w http.ResponseWriter, r *http.Request) {
 		Created   bool          `json:"created"`
 		Error     string        `json:"error,omitempty"`
 	}
-	results := make([]applied, 0, len(objs))
-	httpStatus := http.StatusOK
-	for _, obj := range objs {
-		a := applied{Kind: obj.Kind, Name: obj.Metadata.Name}
+	validated := make([]v1alpha1.Object, 0, len(objs))
+	preview := make([]applied, 0, len(objs))
+	for index, obj := range objs {
 		if err := obj.Validate(); err != nil {
-			a.Error = err.Error()
-			httpStatus = http.StatusMultiStatus
-			results = append(results, a)
-			continue
+			writeValidationErr(w, fmt.Errorf("document %d: %w", index+1, err))
+			return
 		}
 		normalized := obj.Normalized()
-		a.Namespace, a.Tag = normalized.Metadata.Namespace, normalized.Metadata.Tag
-		if !auth.CanWrite(id, normalized) {
-			a.Error = "forbidden: cannot write tenant " + normalized.Metadata.TenantID
-			httpStatus = http.StatusMultiStatus
-			results = append(results, a)
-			continue
+		if !auth.CanPublish(id, normalized) {
+			writeErr(w, http.StatusForbidden, "cannot write tenant "+normalized.Metadata.TenantID)
+			return
 		}
-		res, created, err := s.store.Apply(r.Context(), obj)
-		if err != nil {
-			a.Error = err.Error()
-			httpStatus = http.StatusMultiStatus
-		} else {
-			a.Created = created
-			a.Namespace, a.Tag = res.Metadata.Namespace, res.Metadata.Tag
-		}
-		results = append(results, a)
+		validated = append(validated, obj)
+		preview = append(preview, applied{
+			Kind: obj.Kind, Name: obj.Metadata.Name,
+			Namespace: normalized.Metadata.Namespace, Tag: normalized.Metadata.Tag,
+		})
 	}
-	writeJSON(w, httpStatus, map[string]interface{}{"applied": results, "count": len(results)})
+	if r.URL.Query().Get("dryRun") == "true" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"applied": preview, "count": len(preview), "dry_run": true,
+		})
+		return
+	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if len(idempotencyKey) > 255 || strings.ContainsAny(idempotencyKey, "\r\n\x00") {
+		writeErr(w, http.StatusBadRequest, "Idempotency-Key must be at most 255 safe characters")
+		return
+	}
+	canonical, err := json.Marshal(validated)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "cannot fingerprint validated bundle")
+		return
+	}
+	requestHash := fmt.Sprintf("%x", sha256.Sum256(canonical))
+	scope := id.TenantID + ":" + id.Subject
+	batch, err := s.store.ApplyBatch(r.Context(), validated, store.BatchOptions{
+		IdempotencyScope: scope,
+		IdempotencyKey:   idempotencyKey,
+		RequestHash:      requestHash,
+	})
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrTenantConflict) || errors.Is(err, store.ErrImmutableTag) || errors.Is(err, store.ErrNameConflict) || errors.Is(err, store.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		writeErr(w, status, err.Error())
+		return
+	}
+	results := make([]applied, 0, len(batch.Items))
+	for _, result := range batch.Items {
+		results = append(results, applied{
+			Kind: result.Object.Kind, Name: result.Object.Metadata.Name,
+			Namespace: result.Object.Metadata.Namespace, Tag: result.Object.Metadata.Tag,
+			Created: result.Created,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"applied": results, "count": len(results)})
 }
 
 func (s *Server) v0DeleteApply(w http.ResponseWriter, r *http.Request) {
@@ -462,7 +567,7 @@ func (s *Server) v0DeleteApply(w http.ResponseWriter, r *http.Request) {
 	for _, obj := range objs {
 		n := obj.Normalized()
 		existing, gerr := s.store.Get(r.Context(), n.Kind, n.Metadata.Namespace, n.Metadata.Name, n.Metadata.Tag)
-		if gerr != nil || !auth.CanWrite(id, existing) {
+		if gerr != nil || !auth.CanDelete(id, existing) {
 			continue
 		}
 		if s.store.Delete(r.Context(), n.Kind, n.Metadata.Namespace, n.Metadata.Name, n.Metadata.Tag) == nil {

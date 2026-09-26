@@ -11,6 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/tesserix/agentic-registry/internal/activation"
+	"github.com/tesserix/agentic-registry/internal/embed"
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
 )
 
@@ -25,11 +27,20 @@ type Memory struct {
 	now           func() time.Time
 	immutableTags bool
 	autoVersion   bool
+	idempotency   map[string]memoryIdempotency
+}
+
+type memoryIdempotency struct {
+	requestHash string
+	results     []ApplyResult
 }
 
 // NewMemory returns an empty in-memory store.
 func NewMemory() *Memory {
-	return &Memory{objs: map[string]v1alpha1.Object{}, revs: map[string][]Revision{}, now: time.Now}
+	return &Memory{
+		objs: map[string]v1alpha1.Object{}, revs: map[string][]Revision{},
+		idempotency: map[string]memoryIdempotency{}, now: time.Now,
+	}
 }
 
 func revKey(kind v1alpha1.Kind, ns, name string) string {
@@ -141,6 +152,54 @@ func (m *Memory) Apply(_ context.Context, obj v1alpha1.Object) (v1alpha1.Object,
 		})
 	}
 	return obj, !existed, nil
+}
+
+func (m *Memory) ApplyBatch(ctx context.Context, objs []v1alpha1.Object, opts BatchOptions) (BatchResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idempotencyKey := opts.IdempotencyScope + "\x00" + opts.IdempotencyKey
+	if opts.IdempotencyKey != "" {
+		if previous, ok := m.idempotency[idempotencyKey]; ok {
+			if previous.requestHash != opts.RequestHash {
+				return BatchResult{}, ErrIdempotencyConflict
+			}
+			return BatchResult{Items: append([]ApplyResult(nil), previous.results...), Replayed: true}, nil
+		}
+	}
+
+	candidate := &Memory{
+		objs:          make(map[string]v1alpha1.Object, len(m.objs)),
+		revs:          make(map[string][]Revision, len(m.revs)),
+		now:           m.now,
+		immutableTags: m.immutableTags,
+		autoVersion:   m.autoVersion,
+		idempotency:   make(map[string]memoryIdempotency, len(m.idempotency)),
+	}
+	for k, obj := range m.objs {
+		candidate.objs[k] = obj
+	}
+	for k, revisions := range m.revs {
+		candidate.revs[k] = append([]Revision(nil), revisions...)
+	}
+	for k, record := range m.idempotency {
+		candidate.idempotency[k] = record
+	}
+	results := make([]ApplyResult, 0, len(objs))
+	for _, obj := range objs {
+		applied, created, err := candidate.Apply(ctx, obj)
+		if err != nil {
+			return BatchResult{}, err
+		}
+		results = append(results, ApplyResult{Object: applied, Created: created})
+	}
+	m.objs, m.revs = candidate.objs, candidate.revs
+	if opts.IdempotencyKey != "" {
+		m.idempotency[idempotencyKey] = memoryIdempotency{
+			requestHash: opts.RequestHash,
+			results:     append([]ApplyResult(nil), results...),
+		}
+	}
+	return BatchResult{Items: results}, nil
 }
 
 func (m *Memory) ListRevisions(_ context.Context, kind v1alpha1.Kind, ns, name string) ([]Revision, error) {
@@ -281,15 +340,7 @@ func filter(in []v1alpha1.Object, opts ListOptions) []v1alpha1.Object {
 
 func matchesSearch(o v1alpha1.Object, q string) bool {
 	q = strings.ToLower(q)
-	if strings.Contains(strings.ToLower(o.Metadata.Name), q) {
-		return true
-	}
-	for _, f := range []string{"title", "description"} {
-		if v, ok := o.Spec[f].(string); ok && strings.Contains(strings.ToLower(v), q) {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(strings.ToLower(embed.SearchText(o)), q)
 }
 
 // collapseLatest keeps the newest tag per (namespace,name).
@@ -396,6 +447,39 @@ func (m *Memory) MergeStatus(_ context.Context, kind v1alpha1.Kind, ns, name, ta
 	o.Status = merged
 	m.objs[key(kind, ns, name, tag)] = o
 	return nil
+}
+
+func (m *Memory) ObserveActivation(_ context.Context, ns, name, tag string, observation activation.Observation) (activation.Status, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o, ok := m.objs[key(v1alpha1.KindMCPServer, ns, name, tag)]
+	if !ok {
+		return activation.Status{}, ErrNotFound
+	}
+	var current activation.Status
+	var err error
+	if document, ok := o.Status["activation"].(map[string]interface{}); ok {
+		current, err = activation.DecodeDocument(document)
+	} else {
+		current, err = activation.NewForMCPServer(o, m.now().UTC())
+	}
+	if err != nil {
+		return activation.Status{}, err
+	}
+	next, err := current.Observe(observation)
+	if err != nil {
+		return activation.Status{}, err
+	}
+	document, err := activation.Document(next)
+	if err != nil {
+		return activation.Status{}, err
+	}
+	if o.Status == nil {
+		o.Status = map[string]interface{}{}
+	}
+	o.Status["activation"] = document
+	m.objs[key(v1alpha1.KindMCPServer, ns, name, tag)] = o
+	return next, nil
 }
 
 func (m *Memory) SetStatus(_ context.Context, kind v1alpha1.Kind, ns, name, tag, status string) error {

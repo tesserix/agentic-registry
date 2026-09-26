@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/tesserix/agentic-registry/pkg/api/v1alpha1"
@@ -56,5 +57,36 @@ func TestNamespacelessReadResolvesAcrossNamespaces(t *testing.T) {
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v0/mcpservers/analyst-mcp?namespace=default", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("explicit wrong namespace should 404: got %d", rec.Code)
+	}
+}
+
+func TestArtifactReadPathsAcceptEscapedRegistryNames(t *testing.T) {
+	srv, st := testServer(t)
+	name := "io.github.acme/files"
+	if _, _, err := st.Apply(context.Background(), v1alpha1.Object{
+		Kind: v1alpha1.KindMCPServer,
+		Metadata: v1alpha1.ObjectMeta{
+			Name: name, Namespace: "devai", Tag: "3.1.0",
+		},
+		Spec: map[string]any{"name": name, "version": "3.1.0"},
+	}); err != nil {
+		t.Fatalf("seed mcp: %v", err)
+	}
+
+	escaped := url.PathEscape(name)
+	paths := []string{
+		"/v0/mcpservers/" + escaped + "?namespace=devai",
+		"/v0/mcpservers/" + escaped + "/3.1.0?namespace=devai",
+		"/v0/mcpservers/" + escaped + "/tags?namespace=devai",
+		"/v0/mcpservers/" + escaped + "/revisions?namespace=devai",
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s: got %d, body %s", path, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

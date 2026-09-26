@@ -42,7 +42,7 @@ func TestPutStatus_RecordsObservationAndReadyCondition(t *testing.T) {
 	srv, st := testServer(t)
 	seedProbedServer(t, st)
 
-	rec := putStatus(t, srv, `{"reachable":true,"tools":["get_order_status"],"protocolVersion":"2025-06-18"}`)
+	rec := putStatus(t, srv, `{"reachable":true,"tools":["get_order_status"],"protocolVersion":"2026-07-28"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, body %s", rec.Code, rec.Body.String())
 	}
@@ -54,7 +54,7 @@ func TestPutStatus_RecordsObservationAndReadyCondition(t *testing.T) {
 	if got.Status["observedHash"] != got.Status["declaredHash"] {
 		t.Errorf("in-sync server: %v", got.Status)
 	}
-	if got.Status["protocolVersion"] != "2025-06-18" {
+	if got.Status["protocolVersion"] != "2026-07-28" {
 		t.Errorf("protocolVersion: %v", got.Status["protocolVersion"])
 	}
 	if got.Status["status"] != "active" {
@@ -86,7 +86,7 @@ func TestPutStatus_DriftIsRecordedAgainstTheDeclaration(t *testing.T) {
 	srv, st := testServer(t)
 	seedProbedServer(t, st)
 
-	rec := putStatus(t, srv, `{"reachable":true,"tools":["get_order_status","delete_order"]}`)
+	rec := putStatus(t, srv, `{"reachable":true,"tools":["get_order_status","delete_order"],"protocolVersion":"2026-07-28"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, body %s", rec.Code, rec.Body.String())
 	}

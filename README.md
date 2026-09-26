@@ -8,6 +8,7 @@ Skills · Tools · MCP Servers · Prompts · Workflows · Blueprints · Agents
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tesserix/agentic-registry/actions/workflows/ci.yml/badge.svg)](https://github.com/tesserix/agentic-registry/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tesserix/agentic-registry)](https://github.com/tesserix/agentic-registry/releases/latest)
 [![CodeQL](https://github.com/tesserix/agentic-registry/actions/workflows/codeql.yml/badge.svg)](https://github.com/tesserix/agentic-registry/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tesserix/agentic-registry/badge)](https://scorecard.dev/viewer/?uri=github.com/tesserix/agentic-registry)
 [![Go Report Card](https://goreportcard.com/badge/github.com/tesserix/agentic-registry)](https://goreportcard.com/report/github.com/tesserix/agentic-registry)
@@ -69,7 +70,12 @@ yourself and point **any** agentic gateway at.
 - **Gateway adapters** — export live registry state to a runtime's native config
   (`agentgateway`, `kagent`) without the registry ever being on the request path.
 - **Built-in MCP discovery server** — agentic IDEs browse the catalog *through MCP itself*
-  (`list_skills`, `get_server`, `search_registry`, …).
+  (`list_skills`, `get_server`, `search_registry`, …) over stateless MCP `2026-07-28`;
+  the legacy initialize path remains compatibility-only.
+- **Digest-safe capability probing** — `server/discover` and self-contained `tools/list`
+  qualify routed servers without sessions; legacy-only servers cannot become ready.
+- **Registry-owned semantic discovery** — pgvector ranks a secret-safe projection of capability
+  annotations, relationships, tags, and Tool schemas; gateways fetch exact hits progressively.
 - **Marketplace UI + `agentic` CLI** — browse in the web app; `init`/`apply`/`push`/`pull`/`render`
   from the terminal.
 
@@ -218,7 +224,7 @@ Config lives in `~/.agentic/config.json`. Overridable via `AGENTIC_REGISTRY`,
 
 ```text
 GET    /v0/health
-GET    /v0/{plural}[?namespace=&labelSelector=]    list a kind (skills|tools|mcpservers|prompts|workflows|blueprints|agents)
+GET    /v0/{plural}[?namespace=&labelSelector=]    list a kind (skills|tools|mcpservers|prompts|workflows|blueprints|agents|datasets|evalsuites)
 POST   /v0/{plural}                                 publish a single resource
 GET    /v0/{plural}/{name}                          latest tag
 GET    /v0/{plural}/{name}/{tag}                    a specific tag
@@ -228,7 +234,7 @@ DELETE /v0/{plural}/{name}/{tag}                     delete one version
 POST   /v0/apply                                     multi-doc YAML batch (apply)
 DELETE /v0/apply                                     multi-doc YAML batch (delete)
 POST   /v0/prompts/{name}/render                     → { model, messages, params, tools }
-GET    /v0/search?q=                                 cross-kind ranked search
+GET    /v0/search?q=&kinds=&limit=&view=stub         ranked safe stubs with exact fetch paths
 GET    /v0/signing-key                               public key the registry signs with
 GET    /v0/agents/{name}/.well-known/agent-card.json  A2A agent card
 GET    /v0/{plural}/{name}/resolved                  fully-resolved artifact (refs expanded)
@@ -236,8 +242,9 @@ GET    /v0/export/agentgateway                       export catalog as agentgate
 GET    /v0/export/kagent                             export agents as kagent resources
 ```
 
-`servers` and `mcpservers` are aliases for the `MCPServer` kind; the apiVersion group is
-normalized on ingest.
+`servers`, `mcpservers`, and `mcp-servers` alias `MCPServer`; `evalsuites` and `eval-suites`
+alias `EvalSuite`. The apiVersion group is normalized on ingest. Omitting `view=stub` on search
+retains the artifact-envelope response for compatibility.
 
 ### `/v0.1/*` — MCP Generic Registry interop (verbatim)
 
@@ -307,6 +314,13 @@ an exact `AUTH_ADMIN_EMAILS` match and the project role named by
 `AUTH_ADMIN_ROLE`. This mapping understands Zitadel's project-role object claim
 and does not affect tenant-scoped deploy keys or scoped machine identities. See
 [`docs/adr/0002-zitadel-admin-and-machine-integration-boundaries.md`](docs/adr/0002-zitadel-admin-and-machine-integration-boundaries.md).
+
+Tenant publishers sign in interactively with `agentic auth login`. For CI,
+users create a short-lived, namespace/kind-scoped credential under **Settings →
+API credentials** and configure `AGENTIC_CLIENT_ID`,
+`AGENTIC_CLIENT_SECRET`, `AGENTIC_TOKEN_URL`, and `AGENTIC_AUDIENCE`. The CLI
+exchanges those values for a short-lived token in memory; it never persists the
+client secret. See the [CLI credential setup](docs/cli.md#configure).
 
 ---
 

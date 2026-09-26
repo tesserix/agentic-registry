@@ -1,6 +1,7 @@
 package agentgateway
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,13 +11,34 @@ import (
 func remoteServer(name, url string) v1alpha1.Object {
 	return v1alpha1.Object{
 		Kind:     v1alpha1.KindMCPServer,
-		Metadata: v1alpha1.ObjectMeta{Name: name},
+		Metadata: v1alpha1.ObjectMeta{Name: name, Labels: map[string]string{"mcp.tesserix.app/class": "platform"}},
 		Spec: map[string]interface{}{
-			"name": name,
+			"name":            name,
+			"protocolVersion": "2026-07-28",
 			"remotes": []interface{}{
 				map[string]interface{}{"type": "streamableHttp", "url": url},
 			},
 		},
+	}
+}
+
+func TestBuildRoutes_RequiresPlatformApprovalAndStatelessRevision(t *testing.T) {
+	unapproved := remoteServer("unapproved-mcp", "https://unapproved.example/mcp")
+	delete(unapproved.Metadata.Labels, "mcp.tesserix.app/class")
+
+	legacy := remoteServer("legacy-mcp", "https://legacy.example/mcp")
+	legacy.Spec["protocolVersion"] = "2025-11-25"
+
+	routes, err := BuildRoutes([]v1alpha1.Object{
+		unapproved,
+		legacy,
+		remoteServer("approved-mcp", "https://approved.example/mcp"),
+	}, Options{Namespace: "agentgateway-system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Server != "approved-mcp" {
+		t.Fatalf("want only the approved stateless server routed, got %+v", routes)
 	}
 }
 
@@ -44,6 +66,46 @@ func TestBuildRoutes_Remote(t *testing.T) {
 	if routes[0].Target.protocol != "StreamableHTTP" {
 		t.Errorf("protocol: got %q", routes[0].Target.protocol)
 	}
+	spec := routes[0].Backend["spec"].(map[string]interface{})
+	if _, exists := spec["mcp"]; exists {
+		t.Fatalf("stateless protocol must bypass AgentGateway MCP session handling: %+v", spec)
+	}
+	wantBackend := map[string]interface{}{"host": "files.acme.dev", "port": 443}
+	if !reflect.DeepEqual(spec["static"], wantBackend) {
+		t.Fatalf("static backend:\n got %#v\nwant %#v", spec["static"], wantBackend)
+	}
+}
+
+func TestBuildRoutes_RewritesEachExposedPathToStatelessUpstream(t *testing.T) {
+	routes, err := BuildRoutes([]v1alpha1.Object{
+		tenantServer("homechef", "homechef-mcp", "http://homechef-mcp.homechef.svc.cluster.local:8765/runtime/mcp"),
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rules := routes[0].HTTPRoute["spec"].(map[string]interface{})["rules"].([]interface{})
+	if len(rules) != 2 {
+		t.Fatalf("tenant and flat paths need independent rewrites, got %d rules", len(rules))
+	}
+	wantPaths := []string{"/mcp/homechef/homechef-mcp", "/mcp/homechef-mcp"}
+	for i, raw := range rules {
+		rule := raw.(map[string]interface{})
+		matches := rule["matches"].([]interface{})
+		gotPath := matches[0].(map[string]interface{})["path"].(map[string]interface{})["value"]
+		if gotPath != wantPaths[i] {
+			t.Errorf("rule %d match: got %v want %v", i, gotPath, wantPaths[i])
+		}
+		filters := rule["filters"].([]interface{})
+		rewrite := filters[0].(map[string]interface{})["urlRewrite"].(map[string]interface{})
+		if rewrite["hostname"] != "homechef-mcp.homechef.svc.cluster.local" {
+			t.Errorf("rule %d hostname rewrite: got %v", i, rewrite["hostname"])
+		}
+		path := rewrite["path"].(map[string]interface{})
+		if path["type"] != "ReplacePrefixMatch" || path["replacePrefixMatch"] != "/runtime/mcp" {
+			t.Errorf("rule %d path rewrite: got %+v", i, path)
+		}
+	}
 }
 
 func TestBuild_DeterministicYAML(t *testing.T) {
@@ -69,14 +131,9 @@ metadata:
   name: default-a-server
   namespace: agentgateway-system
 spec:
-  mcp:
-    targets:
-      - name: a-server
-        static:
-          host: a.dev
-          path: /mcp
-          port: 443
-          protocol: StreamableHTTP
+  static:
+    host: a.dev
+    port: 443
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -96,10 +153,29 @@ spec:
         - group: agentgateway.dev
           kind: AgentgatewayBackend
           name: default-a-server
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: a.dev
+            path:
+              replacePrefixMatch: /mcp
+              type: ReplacePrefixMatch
       matches:
         - path:
             type: PathPrefix
             value: /mcp/default/a-server
+    - backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: default-a-server
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: a.dev
+            path:
+              replacePrefixMatch: /mcp
+              type: ReplacePrefixMatch
+      matches:
         - path:
             type: PathPrefix
             value: /mcp/a-server
@@ -152,6 +228,26 @@ func TestBuildRoutes_SkipsDirectoryEntries(t *testing.T) {
 	}
 }
 
+func TestBuildRoutes_SkipsServersThatDisableGatewayExport(t *testing.T) {
+	disabledBySpec := remoteServer("google-vertex-mcp", "https://aiplatform.googleapis.com/mcp/generate")
+	disabledBySpec.Spec["gatewayExport"] = false
+
+	disabledByLabel := remoteServer("google-registry-mcp", "https://agentregistry.googleapis.com/mcp")
+	disabledByLabel.Metadata.Labels = map[string]string{"mcp.tesserix.app/gateway-export": "false"}
+
+	routes, err := BuildRoutes([]v1alpha1.Object{
+		disabledBySpec,
+		disabledByLabel,
+		remoteServer("sample-mcp", "http://sample.devai.svc.cluster.local:8080/mcp"),
+	}, Options{Namespace: "agentgateway-system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Server != "sample-mcp" {
+		t.Fatalf("want only the gateway-exported server routed, got %+v", routes)
+	}
+}
+
 func TestBuildRoutes_SkipsServerWithoutRemote(t *testing.T) {
 	servers := []v1alpha1.Object{
 		{Kind: v1alpha1.KindMCPServer, Metadata: v1alpha1.ObjectMeta{Name: "no-remote"}, Spec: map[string]interface{}{"name": "no-remote"}},
@@ -188,11 +284,12 @@ func TestBuildRoutes_EndpointDialect(t *testing.T) {
 	servers := []v1alpha1.Object{
 		{
 			Kind:     v1alpha1.KindMCPServer,
-			Metadata: v1alpha1.ObjectMeta{Name: "homechef-mcp"},
+			Metadata: v1alpha1.ObjectMeta{Name: "homechef-mcp", Labels: map[string]string{"mcp.tesserix.app/class": "platform"}},
 			Spec: map[string]interface{}{
-				"name":      "homechef-mcp",
-				"endpoint":  "http://homechef-mcp.homechef.svc.cluster.local:8765/mcp",
-				"transport": "streamable-http",
+				"name":            "homechef-mcp",
+				"endpoint":        "http://homechef-mcp.homechef.svc.cluster.local:8765/mcp",
+				"transport":       "streamable-http",
+				"protocolVersion": "2026-07-28",
 			},
 		},
 	}
@@ -224,9 +321,55 @@ func TestBuildRoutes_RemotesWinOverEndpoint(t *testing.T) {
 	}
 }
 
+func TestBuildRoutes_ServiceSelectorStillUsesStatelessHTTPBackend(t *testing.T) {
+	srv := remoteServer("devai-mcp", "http://devai-api.devai.svc.cluster.local:8080/mcp/devai")
+	srv.Spec["serviceSelector"] = map[string]interface{}{
+		"namespaces": map[string]interface{}{
+			"matchLabels": map[string]interface{}{
+				"kubernetes.io/metadata.name": "devai",
+			},
+		},
+		"services": map[string]interface{}{
+			"matchLabels": map[string]interface{}{
+				"app.kubernetes.io/name": "devai-api",
+			},
+		},
+	}
+
+	routes, err := BuildRoutes([]v1alpha1.Object{srv}, Options{Namespace: "agentgateway-system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("want 1 route, got %d", len(routes))
+	}
+
+	spec := routes[0].Backend["spec"].(map[string]interface{})
+	if _, exists := spec["mcp"]; exists {
+		t.Fatalf("service discovery must not opt stateless MCP back into session handling: %+v", spec)
+	}
+	want := map[string]interface{}{"host": "devai-api.devai.svc.cluster.local", "port": 8080}
+	if !reflect.DeepEqual(want, spec["static"]) {
+		t.Fatalf("static backend:\n got %#v\nwant %#v", spec["static"], want)
+	}
+}
+
+func TestBuildRoutes_InvalidServiceSelectorFailsClosed(t *testing.T) {
+	srv := remoteServer("devai-mcp", "http://devai-api.devai.svc.cluster.local:8080/mcp/devai")
+	srv.Spec["serviceSelector"] = map[string]interface{}{
+		"services": map[string]interface{}{
+			"matchLabels": map[string]interface{}{},
+		},
+	}
+
+	if _, err := BuildRoutes([]v1alpha1.Object{srv}, Options{}); err == nil {
+		t.Fatal("empty serviceSelector must be rejected instead of falling back to raw TCP")
+	}
+}
+
 func tenantServer(tenant, name, url string) v1alpha1.Object {
 	srv := remoteServer(name, url)
-	srv.Metadata.Labels = map[string]string{tenantLabel: tenant}
+	srv.Metadata.Labels[tenantLabel] = tenant
 	return srv
 }
 
@@ -407,11 +550,13 @@ func routeMatches(t *testing.T, r Route) []string {
 	t.Helper()
 	spec := r.HTTPRoute["spec"].(map[string]interface{})
 	rules := spec["rules"].([]interface{})
-	matches := rules[0].(map[string]interface{})["matches"].([]interface{})
-	paths := make([]string, 0, len(matches))
-	for _, m := range matches {
-		path := m.(map[string]interface{})["path"].(map[string]interface{})
-		paths = append(paths, path["value"].(string))
+	paths := make([]string, 0, len(rules))
+	for _, raw := range rules {
+		matches := raw.(map[string]interface{})["matches"].([]interface{})
+		for _, m := range matches {
+			path := m.(map[string]interface{})["path"].(map[string]interface{})
+			paths = append(paths, path["value"].(string))
+		}
 	}
 	return paths
 }

@@ -100,6 +100,7 @@ type target struct {
 	port     int
 	path     string
 	protocol string // StreamableHTTP | SSE
+	selector map[string]interface{}
 }
 
 // Route is the rendered routing for a single MCP server.
@@ -165,7 +166,7 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 
 	for _, srv := range servers {
 		name := serverName(srv)
-		if name == "" || isDirectory(srv) {
+		if name == "" || !gatewayExportQualified(srv) || isDirectory(srv) || gatewayExportDisabled(srv) {
 			continue
 		}
 		san := adapters.SanitizeName(name)
@@ -176,7 +177,10 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 		}
 		seen[resourceName] = true
 
-		tgt, ok := targetFor(srv)
+		tgt, ok, err := targetFor(srv)
+		if err != nil {
+			return nil, fmt.Errorf("mcp server %s: %w", name, err)
+		}
 		if !ok {
 			continue
 		}
@@ -197,37 +201,16 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 				"labels":    labels,
 			},
 			"spec": map[string]interface{}{
-				"mcp": map[string]interface{}{
-					"targets": []interface{}{
-						map[string]interface{}{
-							"name": san,
-							"static": map[string]interface{}{
-								"host":     tgt.host,
-								"port":     tgt.port,
-								"path":     tgt.path,
-								"protocol": tgt.protocol,
-							},
-						},
-					},
+				"static": map[string]interface{}{
+					"host": tgt.host,
+					"port": tgt.port,
 				},
 			},
 		}
 
-		matches := []interface{}{
-			map[string]interface{}{
-				"path": map[string]interface{}{
-					"type":  "PathPrefix",
-					"value": path,
-				},
-			},
-		}
+		rules := []interface{}{statelessHTTPRouteRule(path, tgt, resourceName)}
 		if *opts.LegacyFlatPath && tenantsPerServer[san] == 1 {
-			matches = append(matches, map[string]interface{}{
-				"path": map[string]interface{}{
-					"type":  "PathPrefix",
-					"value": opts.PathPrefix + "/" + san,
-				},
-			})
+			rules = append(rules, statelessHTTPRouteRule(opts.PathPrefix+"/"+san, tgt, resourceName))
 		}
 
 		httpRoute := map[string]interface{}{
@@ -245,18 +228,7 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 						"namespace": opts.GatewayNamespace,
 					},
 				},
-				"rules": []interface{}{
-					map[string]interface{}{
-						"matches": matches,
-						"backendRefs": []interface{}{
-							map[string]interface{}{
-								"group": backendGroup,
-								"kind":  backendKind,
-								"name":  resourceName,
-							},
-						},
-					},
-				},
+				"rules": rules,
 			},
 		}
 
@@ -288,6 +260,38 @@ func BuildRoutes(servers []v1alpha1.Object, opts Options) ([]Route, error) {
 
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Name < routes[j].Name })
 	return routes, nil
+}
+
+func statelessHTTPRouteRule(matchPath string, tgt target, resourceName string) map[string]interface{} {
+	return map[string]interface{}{
+		"matches": []interface{}{
+			map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":  "PathPrefix",
+					"value": matchPath,
+				},
+			},
+		},
+		"filters": []interface{}{
+			map[string]interface{}{
+				"type": "URLRewrite",
+				"urlRewrite": map[string]interface{}{
+					"hostname": tgt.host,
+					"path": map[string]interface{}{
+						"type":               "ReplacePrefixMatch",
+						"replacePrefixMatch": tgt.path,
+					},
+				},
+			},
+		},
+		"backendRefs": []interface{}{
+			map[string]interface{}{
+				"group": backendGroup,
+				"kind":  backendKind,
+				"name":  resourceName,
+			},
+		},
+	}
 }
 
 // scopePolicy renders the per-route authorization: a caller reaches this one
@@ -423,16 +427,65 @@ func serverName(srv v1alpha1.Object) string {
 	return srv.Metadata.Name
 }
 
-// targetFor resolves where a server's Backend points, from spec.remotes[].url.
-// A server that declares no remote has no resolvable upstream and reports false;
-// guessing an in-cluster Service name here produced routes to Services that
-// never existed.
-func targetFor(srv v1alpha1.Object) (target, bool) {
+// targetFor resolves the registered URL for a server's stateless HTTP backend.
+// Service selectors are still validated, but the URL remains authoritative:
+// AgentGateway's selector-based MCP target enables legacy session handling.
+func targetFor(srv v1alpha1.Object) (target, bool, error) {
+	selector, present, err := serviceSelectorFor(srv)
+	if err != nil {
+		return target{}, false, err
+	}
+
 	u, transport := firstRemote(srv)
 	if u == "" {
-		return target{}, false
+		return target{}, false, nil
 	}
-	return parseRemote(u, transport), true
+	tgt := parseRemote(u, transport)
+	if present {
+		tgt.selector = selector
+	}
+	return tgt, true, nil
+}
+
+// serviceSelectorFor accepts the portable Registry extension used for
+// in-cluster MCP Services. Only non-empty matchLabels are supported initially;
+// rejecting malformed or broader shapes prevents an intended identity-aware
+// target from silently degrading to raw TCP.
+func serviceSelectorFor(srv v1alpha1.Object) (map[string]interface{}, bool, error) {
+	value, present := srv.Spec["serviceSelector"]
+	if !present {
+		return nil, false, nil
+	}
+	raw, ok := value.(map[string]interface{})
+	if !ok {
+		return nil, false, fmt.Errorf("serviceSelector must be an object")
+	}
+
+	selector := make(map[string]interface{}, len(raw))
+	for key, value := range raw {
+		if key != "namespaces" && key != "services" {
+			return nil, false, fmt.Errorf("serviceSelector.%s is not supported", key)
+		}
+		part, ok := value.(map[string]interface{})
+		if !ok || len(part) != 1 {
+			return nil, false, fmt.Errorf("serviceSelector.%s must contain only matchLabels", key)
+		}
+		labels, ok := part["matchLabels"].(map[string]interface{})
+		if !ok || len(labels) == 0 {
+			return nil, false, fmt.Errorf("serviceSelector.%s.matchLabels must not be empty", key)
+		}
+		for label, value := range labels {
+			text, ok := value.(string)
+			if !ok || strings.TrimSpace(label) == "" || strings.TrimSpace(text) == "" {
+				return nil, false, fmt.Errorf("serviceSelector.%s.matchLabels must contain non-empty strings", key)
+			}
+		}
+		selector[key] = map[string]interface{}{"matchLabels": labels}
+	}
+	if len(selector) == 0 {
+		return nil, false, fmt.Errorf("serviceSelector must select namespaces or services")
+	}
+	return selector, true, nil
 }
 
 // isDirectory reports whether a server is a directory entry — a third-party MCP
@@ -444,6 +497,22 @@ func isDirectory(srv v1alpha1.Object) bool {
 		return true
 	}
 	return srv.Metadata.Labels["mcp.devai.io/catalog"] == "true"
+}
+
+func gatewayExportQualified(srv v1alpha1.Object) bool {
+	return srv.Metadata.Labels["mcp.tesserix.app/class"] == "platform" &&
+		srv.Spec["protocolVersion"] == "2026-07-28"
+}
+
+// gatewayExportDisabled keeps a server discoverable by Registry consumers
+// while excluding it from Gateway routing. This is useful for runtimes such as
+// the DevAI Hub that can provide workload-local authentication (for example,
+// GCP ADC) which the shared Gateway data plane does not hold.
+func gatewayExportDisabled(srv v1alpha1.Object) bool {
+	if enabled, ok := srv.Spec["gatewayExport"].(bool); ok && !enabled {
+		return true
+	}
+	return srv.Metadata.Labels["mcp.tesserix.app/gateway-export"] == "false"
 }
 
 // firstRemote returns the first remote endpoint URL and its transport hint,

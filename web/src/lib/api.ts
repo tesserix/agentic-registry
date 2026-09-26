@@ -68,7 +68,7 @@ async function getRaw(path: string): Promise<Response> {
     let msg = `${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
-      msg = body?.error?.message ?? msg;
+      msg = body?.message ?? body?.error?.message ?? msg;
     } catch {
       /* ignore */
     }
@@ -103,7 +103,67 @@ export interface Health {
 export interface Session {
   authenticated: boolean;
   email: string;
+  tenant_id: string;
+  onboarding_required: boolean;
   admin: boolean;
+}
+
+export interface APICredential {
+  id: string;
+  name: string;
+  client_id: string;
+  scopes: string[];
+  namespaces: string[];
+  kinds: string[];
+  status: string;
+  created_at?: string;
+  expires_at?: string;
+}
+
+export interface APICredentialSecret extends APICredential {
+  client_secret: string;
+}
+
+export interface CreateCredentialInput {
+  name: string;
+  scopes: string[];
+  lifetime_days: number;
+  namespaces: string[];
+  kinds: string[];
+}
+
+export interface TenantOnboardingResult {
+  id: string;
+  slug: string;
+  namespace: string;
+  state: string;
+}
+
+async function credentialMutation<T>(
+  path: string,
+  method: "POST" | "DELETE",
+  body?: unknown,
+): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (method === "POST") headers["Idempotency-Key"] = crypto.randomUUID();
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers,
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const error = await res.json();
+      message = error?.message ?? message;
+    } catch {
+      // The HTTP status remains a safe fallback for a non-JSON proxy error.
+    }
+    throw new Error(message);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
 }
 
 export interface RegistryCondition {
@@ -131,6 +191,24 @@ export const api = {
   health: () => get<Health>("/healthz"),
 
   session: () => get<Session>("/v0/session"),
+
+  onboard: (input: { slug: string; display_name: string }) =>
+    credentialMutation<TenantOnboardingResult>("/v0/onboarding", "POST", input),
+
+  listCredentials: async () =>
+    (await get<{ credentials: APICredential[] }>("/v0/settings/api-credentials")).credentials,
+
+  createCredential: (input: CreateCredentialInput) =>
+    credentialMutation<APICredentialSecret>("/v0/settings/api-credentials", "POST", input),
+
+  rotateCredential: (id: string) =>
+    credentialMutation<APICredentialSecret>(
+      `/v0/settings/api-credentials/${encodeURIComponent(id)}/rotate`,
+      "POST",
+    ),
+
+  revokeCredential: (id: string) =>
+    credentialMutation<void>(`/v0/settings/api-credentials/${encodeURIComponent(id)}`, "DELETE"),
 
   list: (plural: string, opts: { namespace?: string; labelSelector?: string; search?: string } = {}) => {
     const q = new URLSearchParams();

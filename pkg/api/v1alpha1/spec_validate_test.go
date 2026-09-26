@@ -59,6 +59,133 @@ func TestValidateSpec_Agent(t *testing.T) {
 	}
 }
 
+func TestValidateSpecPortableAgentRequiresPinnedContainer(t *testing.T) {
+	valid := map[string]interface{}{
+		"definitionVersion": "v1",
+		"framework":         "tesserix-adk",
+		"runtime": map[string]interface{}{
+			"type":       "container",
+			"protocol":   "a2a",
+			"image":      "ghcr.io/acme/support-agent@sha256:" + strings.Repeat("a", 64),
+			"port":       9090,
+			"path":       "/a2a/v1",
+			"healthPath": "/readyz",
+		},
+	}
+	if err := ValidateSpec(KindAgent, valid); err != nil {
+		t.Fatalf("valid portable agent: %v", err)
+	}
+
+	valid["runtime"].(map[string]interface{})["image"] = "ghcr.io/acme/support-agent:latest"
+	err := ValidateSpec(KindAgent, valid)
+	if err == nil {
+		t.Fatal("portable container agent with a mutable image tag must be rejected")
+	}
+	if !strings.Contains(err.Error(), "spec.runtime.image") {
+		t.Fatalf("error must identify the mutable image: %v", err)
+	}
+}
+
+func TestValidateSpecPortableAgentRuntimeIsCompleteAndUnambiguous(t *testing.T) {
+	base := func() map[string]interface{} {
+		return map[string]interface{}{
+			"definitionVersion": "v1",
+			"framework":         "langgraph",
+			"runtime": map[string]interface{}{
+				"type":     "remote",
+				"protocol": "a2a",
+				"url":      "https://agents.example.com/support",
+				"auth": map[string]interface{}{
+					"type":          "bearer",
+					"credentialRef": "openbao://agents/support-token",
+				},
+			},
+		}
+	}
+	if err := ValidateSpec(KindAgent, base()); err != nil {
+		t.Fatalf("valid remote portable agent: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		edit  func(map[string]interface{})
+		field string
+	}{
+		{"unsupported definition", func(spec map[string]interface{}) { spec["definitionVersion"] = "v2" }, "spec.definitionVersion"},
+		{"missing framework", func(spec map[string]interface{}) { delete(spec, "framework") }, "spec.framework"},
+		{"missing runtime", func(spec map[string]interface{}) { delete(spec, "runtime") }, "spec.runtime"},
+		{"unknown runtime", func(spec map[string]interface{}) { spec["runtime"].(map[string]interface{})["type"] = "process" }, "spec.runtime.type"},
+		{"unknown protocol", func(spec map[string]interface{}) { spec["runtime"].(map[string]interface{})["protocol"] = "stdio" }, "spec.runtime.protocol"},
+		{"insecure remote", func(spec map[string]interface{}) {
+			spec["runtime"].(map[string]interface{})["url"] = "http://agents.example.com/support"
+		}, "spec.runtime.url"},
+		{"remote with image", func(spec map[string]interface{}) {
+			spec["runtime"].(map[string]interface{})["image"] = "ghcr.io/acme/a@sha256:" + strings.Repeat("a", 64)
+		}, "spec.runtime.image"},
+		{"remote without auth", func(spec map[string]interface{}) {
+			delete(spec["runtime"].(map[string]interface{}), "auth")
+		}, "spec.runtime.auth"},
+		{"remote inline token", func(spec map[string]interface{}) {
+			spec["runtime"].(map[string]interface{})["auth"] = map[string]interface{}{
+				"type": "bearer", "token": "secret",
+			}
+		}, "spec.runtime.auth.token"},
+		{"invalid port", func(spec map[string]interface{}) {
+			spec["runtime"].(map[string]interface{})["port"] = 70000
+		}, "spec.runtime.port"},
+		{"unsafe path", func(spec map[string]interface{}) {
+			spec["runtime"].(map[string]interface{})["path"] = "/../admin"
+		}, "spec.runtime.path"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := base()
+			tc.edit(spec)
+			err := ValidateSpec(KindAgent, spec)
+			if err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("want %s error, got %v", tc.field, err)
+			}
+		})
+	}
+}
+
+func TestValidateSpecPortableAgentPinsRegistryDependencies(t *testing.T) {
+	base := func(skill interface{}) map[string]interface{} {
+		return map[string]interface{}{
+			"definitionVersion": "v1",
+			"framework":         "langgraph",
+			"runtime": map[string]interface{}{
+				"type":     "remote",
+				"protocol": "a2a",
+				"url":      "https://agents.example.com/support",
+				"auth": map[string]interface{}{
+					"type":          "bearer",
+					"credentialRef": "openbao://agents/support-token",
+				},
+			},
+			"skills": []interface{}{skill},
+		}
+	}
+	if err := ValidateSpec(KindAgent, base(map[string]interface{}{
+		"ref": "triage", "version": "1.0.0",
+	})); err != nil {
+		t.Fatalf("versioned dependency: %v", err)
+	}
+
+	for name, skill := range map[string]interface{}{
+		"bare name":       "triage",
+		"missing version": map[string]interface{}{"ref": "triage"},
+		"moving latest":   map[string]interface{}{"ref": "triage", "version": "latest"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateSpec(KindAgent, base(skill))
+			if err == nil || !strings.Contains(err.Error(), "spec.skills[0]") {
+				t.Fatalf("want pinned skill reference error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateSpec_Tool(t *testing.T) {
 	if err := ValidateSpec(KindTool, map[string]interface{}{
 		"inputs": []interface{}{map[string]interface{}{"name": "repo", "type": "string"}},
@@ -156,5 +283,37 @@ func TestValidateSpec_MCPCredentialRefIsOptional(t *testing.T) {
 	}
 	if err := ValidateSpec(KindMCPServer, map[string]interface{}{"name": "jira-mcp"}); err != nil {
 		t.Fatalf("credentialRef is optional: %v", err)
+	}
+}
+
+func TestGatewayResourceCredentialReferences(t *testing.T) {
+	valid := func() map[string]interface{} {
+		return map[string]interface{}{
+			"secretRef": map[string]interface{}{"name": "product-mcp-upstream-keys", "key": "ROAMIE_TRAVEL_MCP_KEY"},
+			"location":  map[string]interface{}{"header": map[string]interface{}{"name": "X-MCP-Key"}},
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		credentials interface{}
+		wantError   bool
+	}{
+		{"secret references", []interface{}{valid()}, false},
+		{"plaintext", "do-not-store", true},
+		{"inline key", []interface{}{map[string]interface{}{"key": "do-not-store"}}, true},
+		{"mixed", []interface{}{valid(), map[string]interface{}{"token": "do-not-store"}}, true},
+		{"empty reference", []interface{}{map[string]interface{}{"secretRef": map[string]interface{}{"name": ""}}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := map[string]interface{}{
+				"apiVersion": "agentgateway.dev/v1alpha1", "kind": "AgentgatewayBackend",
+				"metadata": map[string]interface{}{"name": "roamie-mcp"},
+				"spec":     map[string]interface{}{"policies": map[string]interface{}{"auth": map[string]interface{}{"credentials": tc.credentials}}},
+			}
+			err := ValidateSpec(KindGatewayResource, spec)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error=%v, wantError=%v", err, tc.wantError)
+			}
+		})
 	}
 }

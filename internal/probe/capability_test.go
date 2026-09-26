@@ -41,14 +41,14 @@ func TestStatusFor_ReadyWhenObservationMatchesDeclaration(t *testing.T) {
 	status := StatusFor(declared("a", "b"), Observation{
 		Reachable:       true,
 		Tools:           []string{"b", "a"},
-		ProtocolVersion: "2025-06-18",
+		ProtocolVersion: protocolVersion,
 		ProbedAt:        probedAt,
 	})
 
 	if status["observedHash"] != status["declaredHash"] {
 		t.Errorf("hashes must match: %v vs %v", status["observedHash"], status["declaredHash"])
 	}
-	if got := status["protocolVersion"]; got != "2025-06-18" {
+	if got := status["protocolVersion"]; got != protocolVersion {
 		t.Errorf("protocolVersion: got %v", got)
 	}
 	if got := status["lastProbedAt"]; got != "2026-08-20T10:00:00Z" {
@@ -62,11 +62,26 @@ func TestStatusFor_ReadyWhenObservationMatchesDeclaration(t *testing.T) {
 	assertCondition(t, status, "Unreachable", "False", "Probed")
 }
 
+func TestStatusFor_RejectsLegacyOnlyObservation(t *testing.T) {
+	status := StatusFor(declared("a"), Observation{
+		Reachable:       true,
+		Tools:           []string{"a"},
+		ProtocolVersion: "2025-11-25",
+		ProbedAt:        probedAt,
+	})
+
+	assertCondition(t, status, "Ready", "False", "UnsupportedProtocol")
+	if _, ok := status["observedTools"]; ok {
+		t.Error("legacy-only observation must not publish a qualified tool surface")
+	}
+}
+
 func TestStatusFor_DriftedWhenServerGrewATool(t *testing.T) {
 	status := StatusFor(declared("get_order_status"), Observation{
-		Reachable: true,
-		Tools:     []string{"get_order_status", "delete_order"},
-		ProbedAt:  probedAt,
+		Reachable:       true,
+		Tools:           []string{"get_order_status", "delete_order"},
+		ProtocolVersion: protocolVersion,
+		ProbedAt:        probedAt,
 	})
 
 	// It answers, so it is Ready; the declaration is what is stale.
@@ -79,9 +94,10 @@ func TestStatusFor_DriftedWhenServerGrewATool(t *testing.T) {
 
 func TestStatusFor_DriftedWhenDeclaredToolIsMissing(t *testing.T) {
 	status := StatusFor(declared("get_order_status", "track_delivery"), Observation{
-		Reachable: true,
-		Tools:     []string{"get_order_status"},
-		ProbedAt:  probedAt,
+		Reachable:       true,
+		Tools:           []string{"get_order_status"},
+		ProtocolVersion: protocolVersion,
+		ProbedAt:        probedAt,
 	})
 	cond := assertCondition(t, status, "Drifted", "True", "CapabilityDrift")
 	if msg, _ := cond["message"].(string); msg != "missing tools: track_delivery" {
@@ -112,7 +128,9 @@ func TestStatusFor_UnreachableKeepsNoObservedTools(t *testing.T) {
 // A probe is an observation; it may never rewrite the operator's declaration.
 func TestStatusFor_LeavesSpecUntouched(t *testing.T) {
 	spec := declared("a")
-	StatusFor(spec, Observation{Reachable: true, Tools: []string{"b"}, ProbedAt: probedAt})
+	StatusFor(spec, Observation{
+		Reachable: true, Tools: []string{"b"}, ProtocolVersion: protocolVersion, ProbedAt: probedAt,
+	})
 	tools := spec["tools"].([]interface{})
 	if len(tools) != 1 || tools[0] != "a" {
 		t.Errorf("spec mutated: %v", tools)
@@ -123,7 +141,9 @@ func TestStatusFor_ProposesNextVersion(t *testing.T) {
 	added := StatusFor(map[string]interface{}{
 		"version": "1.2.0",
 		"tools":   []interface{}{"a"},
-	}, Observation{Reachable: true, Tools: []string{"a", "b"}, ProbedAt: probedAt})
+	}, Observation{
+		Reachable: true, Tools: []string{"a", "b"}, ProtocolVersion: protocolVersion, ProbedAt: probedAt,
+	})
 	if got := added["proposedVersion"]; got != "1.3.0" {
 		t.Errorf("added tools are a minor bump: got %v", got)
 	}
@@ -131,7 +151,9 @@ func TestStatusFor_ProposesNextVersion(t *testing.T) {
 	removed := StatusFor(map[string]interface{}{
 		"version": "1.2.0",
 		"tools":   []interface{}{"a", "b"},
-	}, Observation{Reachable: true, Tools: []string{"a"}, ProbedAt: probedAt})
+	}, Observation{
+		Reachable: true, Tools: []string{"a"}, ProtocolVersion: protocolVersion, ProbedAt: probedAt,
+	})
 	if got := removed["proposedVersion"]; got != "2.0.0" {
 		t.Errorf("removed tools are a major bump: got %v", got)
 	}
@@ -139,7 +161,9 @@ func TestStatusFor_ProposesNextVersion(t *testing.T) {
 	inSync := StatusFor(map[string]interface{}{
 		"version": "1.2.0",
 		"tools":   []interface{}{"a"},
-	}, Observation{Reachable: true, Tools: []string{"a"}, ProbedAt: probedAt})
+	}, Observation{
+		Reachable: true, Tools: []string{"a"}, ProtocolVersion: protocolVersion, ProbedAt: probedAt,
+	})
 	if _, ok := inSync["proposedVersion"]; ok {
 		t.Error("no drift must propose no version")
 	}

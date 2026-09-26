@@ -8,10 +8,14 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/tesserix/agentic-registry/internal/a2a"
 	"github.com/tesserix/agentic-registry/internal/auth"
+	"github.com/tesserix/agentic-registry/internal/discovery"
 	"github.com/tesserix/agentic-registry/internal/selector"
 	"github.com/tesserix/agentic-registry/internal/signing"
 	"github.com/tesserix/agentic-registry/internal/store"
@@ -56,18 +60,31 @@ type rpcResponse struct {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
 }
+
+const modernProtocolVersion = "2026-07-28"
+const maxRequestBody = 1 << 20
 
 func (d *DiscoveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeRPC(w, rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: "parse error"}})
+		status := http.StatusBadRequest
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		writeRPCStatus(w, status, rpcResponse{
+			JSONRPC: "2.0",
+			Error:   &rpcError{Code: -32700, Message: "parse error"},
+		})
 		return
 	}
 	var id interface{}
@@ -75,9 +92,37 @@ func (d *DiscoveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(req.ID, &id)
 	}
 	resp := rpcResponse{JSONRPC: "2.0", ID: id}
+	modern := r.Header.Get("MCP-Protocol-Version") != ""
+	if modern {
+		if r.Header.Get("Mcp-Session-Id") != "" {
+			writeRPCStatus(w, http.StatusNotFound, rpcResponse{
+				JSONRPC: "2.0", ID: id,
+				Error: &rpcError{Code: -32600, Message: "invalid session"},
+			})
+			return
+		}
+		if status, rpcErr := validateModernRequest(r, req); rpcErr != nil {
+			writeRPCStatus(w, status, rpcResponse{JSONRPC: "2.0", ID: id, Error: rpcErr})
+			return
+		}
+	}
 
 	switch req.Method {
+	case "server/discover":
+		if !modern {
+			resp.Error = &rpcError{Code: -32601, Message: "method not found: " + req.Method}
+			break
+		}
+		resp.Result = map[string]interface{}{
+			"supportedVersions": []string{modernProtocolVersion},
+			"capabilities":      map[string]interface{}{"tools": map[string]interface{}{}},
+			"serverInfo":        map[string]interface{}{"name": "agentic-registry", "version": "v0"},
+		}
 	case "initialize":
+		if modern {
+			resp.Error = &rpcError{Code: -32601, Message: "method not found: " + req.Method}
+			break
+		}
 		resp.Result = map[string]interface{}{
 			"protocolVersion": "2025-06-18",
 			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
@@ -97,12 +142,51 @@ func (d *DiscoveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		resp.Error = &rpcError{Code: -32601, Message: "method not found: " + req.Method}
 	}
-	writeRPC(w, resp)
+	status := http.StatusOK
+	if modern && resp.Error != nil && resp.Error.Code == -32601 {
+		status = http.StatusNotFound
+	}
+	writeRPCStatus(w, status, resp)
 }
 
 func writeRPC(w http.ResponseWriter, resp rpcResponse) {
+	writeRPCStatus(w, http.StatusOK, resp)
+}
+
+func writeRPCStatus(w http.ResponseWriter, status int, resp rpcResponse) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func validateModernRequest(r *http.Request, req rpcRequest) (int, *rpcError) {
+	headerVersion := r.Header.Get("MCP-Protocol-Version")
+	if headerVersion != modernProtocolVersion {
+		return http.StatusBadRequest, &rpcError{
+			Code:    -32022,
+			Message: "unsupported protocol version",
+			Data: map[string]interface{}{
+				"requestedVersion":  headerVersion,
+				"supportedVersions": []string{modernProtocolVersion},
+			},
+		}
+	}
+	if r.Header.Get("MCP-Method") != req.Method {
+		return http.StatusBadRequest, &rpcError{Code: -32020, Message: "routing header mismatch"}
+	}
+	var params struct {
+		Meta struct {
+			ProtocolVersion    string                 `json:"io.modelcontextprotocol/protocolVersion"`
+			ClientCapabilities map[string]interface{} `json:"io.modelcontextprotocol/clientCapabilities"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil || params.Meta.ClientCapabilities == nil {
+		return http.StatusBadRequest, &rpcError{Code: -32602, Message: "invalid request metadata"}
+	}
+	if params.Meta.ProtocolVersion != headerVersion {
+		return http.StatusBadRequest, &rpcError{Code: -32020, Message: "routing header mismatch"}
+	}
+	return http.StatusOK, nil
 }
 
 func toolDefs() []map[string]interface{} {
@@ -126,7 +210,12 @@ func toolDefs() []map[string]interface{} {
 		"type":     "object",
 		"required": []string{"query"},
 		"properties": map[string]interface{}{
-			"query": map[string]interface{}{"type": "string"},
+			"query": map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 512},
+			"kinds": map[string]interface{}{
+				"type":  "array",
+				"items": map[string]interface{}{"type": "string"},
+			},
+			"limit": map[string]interface{}{"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
 		},
 	}
 	var tools []map[string]interface{}
@@ -137,7 +226,7 @@ func toolDefs() []map[string]interface{} {
 			tool("get_"+singular(plural), "Get one "+singular(plural)+" by name.", getSchema),
 		)
 	}
-	tools = append(tools, tool("search_registry", "Keyword search across all artifact kinds.", searchSchema))
+	tools = append(tools, tool("search_registry", "Semantically search safe metadata across all authorized registry artifact kinds.", searchSchema))
 	tools = append(tools, tool("get_agent_card",
 		"Render the A2A (Agent2Agent) Agent Card for an agent — its capabilities, "+
 			"service url, and skills — so a client can call it over A2A.", getSchema))
@@ -164,6 +253,12 @@ func singular(plural string) string {
 		return "blueprint"
 	case "agents":
 		return "agent"
+	case "datasets":
+		return "dataset"
+	case "evalsuites":
+		return "evalsuite"
+	case "gatewayresources":
+		return "gatewayresource"
 	}
 	return plural
 }
@@ -190,11 +285,29 @@ func (d *DiscoveryServer) callTool(ctx context.Context, r *http.Request, params 
 
 	switch {
 	case p.Name == "search_registry":
-		res, err := d.store.List(ctx, store.ListOptions{Namespace: "all", Search: str("query"), LatestOnly: true, CanRead: canRead, Limit: 50})
+		query := strings.TrimSpace(str("query"))
+		if query == "" {
+			return nil, fmt.Errorf("search_registry requires a non-empty query")
+		}
+		if len(query) > 512 {
+			return nil, fmt.Errorf("search_registry query must be at most 512 characters")
+		}
+		kinds, err := discovery.ParseKinds(stringArgs(args["kinds"]))
 		if err != nil {
 			return nil, err
 		}
-		return toolResult(summaries(res.Items)), nil
+		limit, err := integerArg(args["limit"], 10, 1, 50)
+		if err != nil {
+			return nil, err
+		}
+		canSearch := func(obj v1alpha1.Object) bool {
+			return discovery.Allows(kinds, obj.Kind) && canRead(obj)
+		}
+		res, err := d.store.List(ctx, store.ListOptions{Namespace: "all", Search: query, LatestOnly: true, CanRead: canSearch, Limit: limit})
+		if err != nil {
+			return nil, err
+		}
+		return toolResult(discoveryStubs(res.Items)), nil
 	case p.Name == "get_agent_card":
 		return d.agentCardTool(ctx, str, canRead)
 	default:
@@ -244,7 +357,7 @@ func (d *DiscoveryServer) kindTool(ctx context.Context, name string, args map[st
 			if err != nil {
 				return nil, err
 			}
-			return toolResult(summaries(res.Items)), nil
+			return toolResult(discoveryStubs(res.Items)), nil
 		case "get_" + singular(plural):
 			name := str("name")
 			ns := d.resolveNamespace(ctx, k, name, str("namespace"), canRead)
@@ -304,18 +417,53 @@ func (d *DiscoveryServer) agentCardTool(ctx context.Context, str func(string) st
 	return toolResult(card), nil
 }
 
-func summaries(items []v1alpha1.Object) []map[string]interface{} {
-	out := make([]map[string]interface{}, 0, len(items))
-	for _, o := range items {
-		desc, _ := o.Spec["description"].(string)
-		out = append(out, map[string]interface{}{
-			"kind":        o.Kind,
-			"name":        o.Metadata.Name,
-			"namespace":   o.Metadata.Namespace,
-			"tag":         o.Metadata.Tag,
-			"labels":      o.Metadata.Labels,
-			"description": desc,
-		})
+func stringArgs(value interface{}) []string {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return []string{typed}
+	case []string:
+		return typed
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return []string{fmt.Sprint(value)}
+	}
+}
+
+func integerArg(value interface{}, fallback, minimum, maximum int) (int, error) {
+	if value == nil {
+		return fallback, nil
+	}
+	var result int
+	switch typed := value.(type) {
+	case int:
+		result = typed
+	case float64:
+		result = int(typed)
+		if float64(result) != typed {
+			return 0, fmt.Errorf("limit must be an integer")
+		}
+	default:
+		return 0, fmt.Errorf("limit must be an integer")
+	}
+	if result < minimum || result > maximum {
+		return 0, fmt.Errorf("limit must be between %d and %d", minimum, maximum)
+	}
+	return result, nil
+}
+
+func discoveryStubs(items []v1alpha1.Object) []discovery.Stub {
+	out := make([]discovery.Stub, 0, len(items))
+	for _, obj := range items {
+		out = append(out, discovery.BuildStub(obj.WithIdentity()))
 	}
 	return out
 }

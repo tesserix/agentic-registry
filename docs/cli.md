@@ -16,15 +16,61 @@ go install github.com/tesserix/agentic-registry/cmd/agentic@latest
 
 ## Configure
 
+Interactive users should use OAuth device or browser login. Refresh and access
+tokens are kept in the operating-system credential store; the JSON config never
+contains token material.
+
 ```sh
-agentic login --registry https://agentic-registry.example.com --token "$TOKEN"
-# or per-invocation:
+agentic auth login --registry https://aregistry.tesserix.app
+agentic auth status
+agentic auth logout
+```
+
+For unattended CI, create a tenant-scoped credential on **Settings → API
+credentials**, copy the secret when it is shown, and set all four variables:
+
+```sh
+export AGENTIC_CLIENT_ID="<client-id>"
+export AGENTIC_CLIENT_SECRET="<client-secret>"
+export AGENTIC_TOKEN_URL="https://auth.tesserix.app/oauth/v2/token"
+export AGENTIC_AUDIENCE="386930054896026901"
+agentic apply -f agent.yaml
+```
+
+Only `AGENTIC_CLIENT_SECRET` is secret. In GitHub Actions, put it in an Actions
+secret and keep the client ID, token URL, and audience in repository or
+environment variables:
+
+```yaml
+env:
+  AGENTIC_CLIENT_ID: ${{ vars.AGENTIC_CLIENT_ID }}
+  AGENTIC_CLIENT_SECRET: ${{ secrets.AGENTIC_CLIENT_SECRET }}
+  AGENTIC_TOKEN_URL: ${{ vars.AGENTIC_TOKEN_URL }}
+  AGENTIC_AUDIENCE: ${{ vars.AGENTIC_AUDIENCE }}
+steps:
+  - run: agentic apply -f agent.yaml
+```
+
+The CLI obtains a short-lived token with the OAuth client-credentials grant,
+caches it only in process, and never persists the client secret. Rotate a
+credential by updating the CI secret during the identity provider's overlap
+window; revoke it after all publishers use the replacement. Restrict each
+credential to the minimum scopes, namespaces, artifact kinds, and lifetime.
+
+Self-hosted Registry operators can discover the issuer and audience from
+`GET /v0/auth/config`; obtain `token_endpoint` from the issuer's
+`/.well-known/openid-configuration` document rather than assuming the Tesserix
+values above.
+
+The legacy explicit-token override remains available for ephemeral use:
+
+```sh
 export AGENTIC_REGISTRY=https://agentic-registry.example.com
-export AGENTIC_TOKEN=...            # optional bearer token
+export AGENTIC_TOKEN=...            # optional bearer token; never pass it as an argument
 export AGENTIC_INSECURE=1           # local self-signed gateways only
 ```
 
-Config is written to `~/.agentic/config.json` (mode 0600).
+Non-secret config is written to `~/.agentic/config.json` (mode 0600).
 
 ## Commands
 
