@@ -130,6 +130,9 @@ func findSecretFields(value interface{}, path string) []FieldError {
 	case map[string]interface{}:
 		for key, child := range typed {
 			normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(key))
+			if normalized == "credentials" && strings.HasSuffix(path, ".auth") && credentialSecretRefs(child) {
+				continue
+			}
 			if secretFieldNames[normalized] {
 				errs = append(errs, FieldError{path + "." + key, "secret material is not allowed; use workload identity or a Kubernetes secret reference owned by GitOps"})
 				continue
@@ -507,4 +510,39 @@ func typeErrors(prefix string, err error, known ...string) []FieldError {
 		}
 	}
 	return []FieldError{{prefix, "could not be parsed: " + msg}}
+}
+
+func credentialSecretRefs(value interface{}) bool {
+	entries, ok := value.([]interface{})
+	if !ok || len(entries) == 0 {
+		return false
+	}
+	for _, entry := range entries {
+		credential, ok := entry.(map[string]interface{})
+		if !ok || len(credential) != 2 {
+			return false
+		}
+		ref, ok := credential["secretRef"].(map[string]interface{})
+		if !ok || len(ref) != 2 {
+			return false
+		}
+		name, _ := ref["name"].(string)
+		key, _ := ref["key"].(string)
+		if !kubernetesName.MatchString(name) || len(name) > 253 || key == "" {
+			return false
+		}
+		location, ok := credential["location"].(map[string]interface{})
+		if !ok || len(location) != 1 {
+			return false
+		}
+		header, ok := location["header"].(map[string]interface{})
+		if !ok || len(header) != 1 {
+			return false
+		}
+		headerName, _ := header["name"].(string)
+		if headerName == "" {
+			return false
+		}
+	}
+	return true
 }

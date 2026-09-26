@@ -285,3 +285,35 @@ func TestValidateSpec_MCPCredentialRefIsOptional(t *testing.T) {
 		t.Fatalf("credentialRef is optional: %v", err)
 	}
 }
+
+func TestGatewayResourceCredentialReferences(t *testing.T) {
+	valid := func() map[string]interface{} {
+		return map[string]interface{}{
+			"secretRef": map[string]interface{}{"name": "product-mcp-upstream-keys", "key": "ROAMIE_TRAVEL_MCP_KEY"},
+			"location":  map[string]interface{}{"header": map[string]interface{}{"name": "X-MCP-Key"}},
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		credentials interface{}
+		wantError   bool
+	}{
+		{"secret references", []interface{}{valid()}, false},
+		{"plaintext", "do-not-store", true},
+		{"inline key", []interface{}{map[string]interface{}{"key": "do-not-store"}}, true},
+		{"mixed", []interface{}{valid(), map[string]interface{}{"token": "do-not-store"}}, true},
+		{"empty reference", []interface{}{map[string]interface{}{"secretRef": map[string]interface{}{"name": ""}}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := map[string]interface{}{
+				"apiVersion": "agentgateway.dev/v1alpha1", "kind": "AgentgatewayBackend",
+				"metadata": map[string]interface{}{"name": "roamie-mcp"},
+				"spec":     map[string]interface{}{"policies": map[string]interface{}{"auth": map[string]interface{}{"credentials": tc.credentials}}},
+			}
+			err := ValidateSpec(KindGatewayResource, spec)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error=%v, wantError=%v", err, tc.wantError)
+			}
+		})
+	}
+}
