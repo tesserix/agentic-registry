@@ -14,7 +14,7 @@ export const MCP_CLIENTS = [
 ] as const satisfies readonly { id: McpClient; label: string }[];
 
 export const MCP_GATEWAY_ORIGIN = "https://mcp.tesserix.app";
-export const AGENTGATEWAY_PROJECT_ID = "386889024519799084";
+export const AGENTGATEWAY_PROJECT_ID = "387190457387450503";
 
 export interface McpGatewayUserInfo {
   user: string;

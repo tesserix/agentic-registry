@@ -86,7 +86,7 @@ describe("MCP gateway presentation", () => {
     const command = tokenRequestCommand();
 
     expect(command).toContain("https://auth.tesserix.app/oauth/v2/token");
-    expect(command).toContain("386889024519799084:aud");
+    expect(command).toContain("387190457387450503:aud");
     expect(command).toContain("TESSERIX_MCP_CLIENT_SECRET");
     expect(command).not.toContain("client_secret=");
   });
